@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "capability 'files' is not declared by this agent",
+  "code": "capability_not_declared"
+}

@@ -17,6 +17,24 @@ const ROOT = join(PKG, '..', '..');
 const SCHEMA_DIR = join(ROOT, 'schemas', 'v1');
 const OUT_DIR = join(PKG, 'src', 'generated');
 
+/**
+ * Frozen `$id` prefix (ADR-0003). Schemas cross-reference each other by absolute
+ * `$id` — outbox-page's items are event-envelope, for instance.
+ *
+ * Those `$id`s are identifiers, not URLs anyone should fetch: the prefix points at a
+ * GitHub Pages site that ADR-0004 explicitly declined to publish. Left alone, the ref
+ * parser tries to resolve them over HTTP and codegen fails with ERESOLVER — or worse,
+ * succeeds one day against whatever happens to be hosted there. This resolver maps the
+ * prefix back to the local file, so generation is hermetic and offline by construction.
+ */
+const ID_PREFIX = 'https://seanerama.github.io/agent-app-contract/schemas/v1/';
+
+const localSchemaResolver = {
+  order: 1,
+  canRead: (file) => file.url.startsWith(ID_PREFIX),
+  read: (file) => readFileSync(join(SCHEMA_DIR, basename(file.url)), 'utf8'),
+};
+
 const BANNER = [
   '/* eslint-disable */',
   '/**',
@@ -48,6 +66,7 @@ for (const file of schemaFiles) {
   const ts = await compile(schema, schema.title ?? shape, {
     bannerComment: '',
     additionalProperties: true, // tolerant readers — mirrors the open schemas (ADR-0003)
+    $refOptions: { resolve: { agentAppContract: localSchemaResolver } },
     style: {
       singleQuote: true,
       semi: true,
@@ -56,10 +75,42 @@ for (const file of schemaFiles) {
   });
 
   writeFileSync(join(OUT_DIR, `${shape}.ts`), `${BANNER}${ts}`, 'utf8');
-  modules.push(shape);
+  modules.push({ shape, ts, title: schema.title ?? shape });
 }
 
-const index = [BANNER, ...modules.map((m) => `export type * from './${m}.js';`), ''].join('\n');
+/**
+ * Build the barrel with EXPLICIT named re-exports rather than `export type *`.
+ *
+ * A schema that cross-references another by `$id` gets the referenced type INLINED
+ * into its module — outbox-page.ts declares both `OutboxPage` and `EventEnvelope`.
+ * Star-exporting every module then re-exports `EventEnvelope` from two places, which
+ * is a hard TypeScript error (TS2308), not a warning. So each type is exported from
+ * exactly one module: the one whose schema `title` owns the name, falling back to
+ * whichever module declared it first.
+ */
+const declaredIn = new Map(); // type name -> owning module shape
+for (const { shape, ts, title } of modules) {
+  for (const [, name] of ts.matchAll(/export (?:interface|type) (\w+)/g)) {
+    const owned = name === title;
+    if (owned || !declaredIn.has(name)) declaredIn.set(name, shape);
+  }
+}
+
+const exportsByModule = new Map(modules.map((m) => [m.shape, []]));
+for (const [name, shape] of [...declaredIn.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+  exportsByModule.get(shape).push(name);
+}
+
+const index = [
+  BANNER,
+  ...modules
+    .filter(({ shape }) => exportsByModule.get(shape).length > 0)
+    .map(
+      ({ shape }) =>
+        `export type { ${exportsByModule.get(shape).join(', ')} } from './${shape}.js';`,
+    ),
+  '',
+].join('\n');
 writeFileSync(join(OUT_DIR, 'index.ts'), index, 'utf8');
 
 console.log(`generated ${modules.length} module(s) into packages/types/src/generated/`);

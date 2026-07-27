@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://seanerama.github.io/agent-app-contract/schemas/v1/outbox-page.json",
+  "title": "OutboxPage",
+  "description": "Body of a 200 response to GET /app/v1/outbox?after=<id>. Catch-up over exactly the events GET /app/v1/events would have streamed. DECIDED HERE: idea.md froze the `after` cursor but specified no page envelope, so this contract sets the minimum that works and nothing more. There is NO nextCursor, nextPage, or hasMore field, deliberately — invariant 2 allows exactly one cursor concept, and the next cursor is already available as the `id` of the last element of `events`. Adding a second way to express the same position is precisely what that invariant forbids. A client that receives fewer events than it asked for is caught up; one that wants more calls again with the last id it saw.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1,
+      "description": "Envelope version of the page document itself."
+    },
+    "events": {
+      "type": "array",
+      "description": "Events strictly after the requested cursor, in ascending `id` order. MAY be empty, which means the client is caught up. An agent MAY cap page size; the client pages by calling again with the last id it received.",
+      "items": {
+        "$ref": "https://seanerama.github.io/agent-app-contract/schemas/v1/event-envelope.json"
+      }
+    }
+  },
+  "required": ["schema", "events"]
+}
