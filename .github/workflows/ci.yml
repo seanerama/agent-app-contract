@@ -3,8 +3,8 @@ name: CI
 #
 # Each job is added when the thing it checks exists; none is ever added in a form
 # that cannot fail (ADR-0005 rule 3).
-#   stage 1 — lint, typecheck, spec, types-drift   (this file)
-#   stage 2 — loop, pack                            (adds the self-proving loop)
+#   stage 1 — lint, typecheck, spec, types-drift
+#   stage 2 — loop, pack                            (this file)
 on:
   pull_request:
   push:
@@ -84,9 +84,52 @@ jobs:
         run: npm run gen
       - name: Fail on drift
         run: |
-          if ! git diff --quiet -- packages/types/src/generated; then
+          # `git status --porcelain` rather than `git diff`: a NEW schema produces a
+          # NEW generated file, which is untracked, and `git diff` does not see
+          # untracked files at all. Using diff alone would let an added shape ship
+          # with no committed types.
+          DRIFT="$(git status --porcelain -- packages/types/src/generated)"
+          if [ -n "$DRIFT" ]; then
             echo "::error::Generated types are stale. Run 'npm run gen' and commit the result."
+            echo "$DRIFT"
             git diff -- packages/types/src/generated
             exit 1
           fi
           echo "types are in sync with schemas"
+
+  loop:
+    # THE core invariant (ADR-0005). Boots the reference agent and has the harness
+    # certify it over real HTTP. Red here means the schema, the reference
+    # implementation, and the harness disagree — always a real defect in one of the
+    # three, never something to fix by relaxing the harness.
+    #
+    # Three scenarios, so gating is exercised in both directions:
+    #   chat-only        -> exit 0, files checks skipped
+    #   declares files   -> exit 1, because declaring is binding
+    #   nothing bound    -> exit 2, unreachable is not a verdict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Self-proving loop
+        run: node scripts/ci-loop.mjs
+
+  pack:
+    # The deploy-leg substitute (ADR-0004): nothing deploys, so instead prove each
+    # publishable package produces a tarball with built JS + .d.ts via `prepare`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Verify packed tarballs
+        run: npm run verify:pack

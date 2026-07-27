@@ -19,7 +19,9 @@
     "format": "biome check --write .",
     "test": "node --test \"test/**/*.test.mjs\"",
     "gen": "npm run gen --workspace @agent-app/types",
-    "validate:examples": "node scripts/validate-examples.mjs"
+    "validate:examples": "node scripts/validate-examples.mjs",
+    "loop": "npm run build && node scripts/ci-loop.mjs",
+    "verify:pack": "node scripts/verify-pack.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "agent": {
+    "name": "nightshift-assistant",
+    "version": "0.1.0"
+  },
+  "contract": {
+    "name": "app-ingress",
+    "version": 1
+  },
+  "capabilities": ["chat", "files", "mcp-tools", "mcp-apps-ui"],
+  "ui": {
+    "home": "ui://nightshift/jobs@v1"
+  }
+}

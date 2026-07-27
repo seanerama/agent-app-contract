@@ -6,3 +6,4 @@
  */
 
 export type * from './health.js';
+export type * from './manifest.js';

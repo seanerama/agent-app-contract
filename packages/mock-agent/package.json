@@ -1,0 +1,36 @@
+{
+  "name": "@agent-app/mock-agent",
+  "version": "0.1.0",
+  "description": "Reference in-memory implementation of the app-ingress v1 surface. Run it locally for app development; CI runs the conformance harness against it.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seanerama/agent-app-contract.git",
+    "directory": "packages/mock-agent"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "mock-agent": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-schemas.mjs",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
