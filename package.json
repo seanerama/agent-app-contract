@@ -17,7 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "node --test test/**/*.test.mjs",
+    "test": "node --test \"test/**/*.test.mjs\"",
     "gen": "npm run gen --workspace @agent-app/types",
     "validate:examples": "node scripts/validate-examples.mjs"
   },
