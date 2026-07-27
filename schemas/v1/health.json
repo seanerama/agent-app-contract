@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://seanerama.github.io/agent-app-contract/schemas/v1/health.json",
+  "title": "HealthResponse",
+  "description": "Body of a 200 response to GET /app/v1/health. Mirrors the agent's existing /health surface (nightshift-client/idea.md 3.5). Liveness is authenticated like every other route — see contracts/app-ingress.md invariant 1.",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "True when the agent considers itself healthy. A 200 with ok:false is a valid, meaningful response — the agent is reachable but degraded."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent version string. Opaque to the client; no format is imposed."
+    },
+    "uptimeSec": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Seconds since the agent process started."
+    }
+  },
+  "required": ["ok", "version", "uptimeSec"]
+}

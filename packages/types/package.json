@@ -1,0 +1,34 @@
+{
+  "name": "@agent-app/types",
+  "version": "0.1.0",
+  "description": "TypeScript types generated from the app-ingress v1 JSON Schemas. Generated output is committed and drift-checked in CI — never hand-edit src/generated.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seanerama/agent-app-contract.git",
+    "directory": "packages/types"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "gen": "node scripts/gen.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "15.0.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

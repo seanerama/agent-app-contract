@@ -1,8 +1,10 @@
 name: CI
-# agent-app-contract — Verity hygiene gate (stack-agnostic).
-# Honestly green on a fresh scaffold: secret-scan + a structure check, no faked
-# pass. Lint and test gates are added when the Architect chooses the stack and the
-# walking skeleton lands (the progressive gate — framework-spec §3).
+# agent-app-contract — the progressive gate (framework-spec §3).
+#
+# Each job is added when the thing it checks exists; none is ever added in a form
+# that cannot fail (ADR-0005 rule 3).
+#   stage 1 — lint, typecheck, spec, types-drift   (this file)
+#   stage 2 — loop, pack                            (adds the self-proving loop)
 on:
   pull_request:
   push:
@@ -34,3 +36,57 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install (locked)
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+
+  spec:
+    # Schemas are the source of truth (ADR-0003). This job also enforces the frozen
+    # $id prefix and open additionalProperties, so a typo in an $id cannot reach a
+    # tag on review attention alone.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Validate examples against schemas
+        run: npm run validate:examples
+
+  types-drift:
+    # Generated types are committed. If a schema changed and `npm run gen` was not
+    # re-run, this goes red — the types can never silently lag the schemas.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Regenerate types
+        run: npm run gen
+      - name: Fail on drift
+        run: |
+          if ! git diff --quiet -- packages/types/src/generated; then
+            echo "::error::Generated types are stale. Run 'npm run gen' and commit the result."
+            git diff -- packages/types/src/generated
+            exit 1
+          fi
+          echo "types are in sync with schemas"
