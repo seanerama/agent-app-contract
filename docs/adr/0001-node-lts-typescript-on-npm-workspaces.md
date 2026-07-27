@@ -1,6 +1,6 @@
 # 0001. Node LTS + TypeScript on npm workspaces
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-07-27, same day — see *Amendment 1*)
 - **Date:** 2026-07-27
 
 ## Context
@@ -18,18 +18,41 @@ TypeScript, matching the agent."
 
 ## Decision
 
-- **Runtime:** Node.js 24 (Active LTS as of this date), pinned in `.nvmrc` and in
-  every `package.json` `engines.node` field as `>=24`. CI runs the same major.
+- **Runtime:** Node.js 22, pinned in `.nvmrc` and in every `package.json`
+  `engines.node` field as `>=22`. CI runs the same major. *(Amended — see below.)*
 - **Language:** TypeScript, `strict: true`, compiled with `tsc` to ESM. No bundler.
 - **Workspace:** npm workspaces (`packages/*`) with a committed `package-lock.json`.
   No pnpm/yarn/turbo.
 - **Test runner:** the built-in `node:test` + `node:assert`, run via `node --test`.
+- **Linter/formatter:** Biome. *(Amended — see below.)*
 - **Module format:** ESM throughout (`"type": "module"`).
 
-> **Open item for the Planner:** Node 24 is the current Active LTS, but `plan.md`
-> says "matching the agent." If `nightshift-assistant` pins Node 22, change this to
-> 22 *before* Stage 1 lands — after that the pin is in a published tag. This is a
-> one-line change now and a coordinated one later.
+## Amendment 1 — 2026-07-27 (Planner)
+
+The original text pinned **Node 24** (then Active LTS) and flagged an open item: *"If
+`nightshift-assistant` pins Node 22, change this to 22 before Stage 1 lands."*
+
+The Planner's mandatory verify-against-live-source step resolved it. Evidence from
+`seanerama/nightshift-assistant@HEAD`:
+
+- `package.json` → `"engines": { "node": ">=22" }`, `"@types/node": "22.20.0"`
+- `.github/workflows/ci.yml` → `node-version: 22`
+- the developer's own workstation runs `v22.22.0`
+
+`plan.md` §3 says "Node LTS + TypeScript, **matching the agent**." Node 22 is
+Maintenance LTS through April 2027, which comfortably covers v1.x. **Pin changed to
+22.** Nothing else in this ADR is affected.
+
+Second amendment, same review: **Biome is adopted** as linter/formatter, matching
+`nightshift-assistant` (`@biomejs/biome` 2.5.2, `biome.json`). The original ADR was
+silent on linting, which would have left CI without an honest lint job and let style
+drift between two repos maintained by one person. Biome is a devDependency only and
+never reaches a consumer's runtime, so it does not weaken the low-surface argument
+below.
+
+`node:test` was **kept** despite the assistant using Vitest: the reasoning below is
+about packages other repos install from a git tag, and it stands independently of
+what the sibling repo does for its own internal tests.
 
 ## Alternatives considered
 
@@ -66,7 +89,8 @@ its server-rendered-over-SPA lean does not apply (there is no UI in this repo).
   conformance harness itself, not unit-test ergonomics.
 - Pinning a Node major means a yearly bump PR. That bump is a *behavioral* change for
   consumers running the harness, so it belongs in `CHANGELOG.md` even though it is
-  not a spec change.
+  not a spec change. Node 22 leaves Maintenance LTS in **April 2027** — that is the
+  deadline for the bump, and it must be scheduled rather than discovered.
 - ESM-only will bite any downstream consumer still on CJS. `nightshift-client` (Expo)
   and a modern Node agent are both fine; this is recorded so the failure is
   recognized instantly if a third consumer appears.

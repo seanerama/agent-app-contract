@@ -24,11 +24,15 @@ schemas/v1/health.json  ─validate─►  examples/health.json          ①
 
 **One endpoint. Two checks. Every link exercised once.**
 
-`GET /app/v1/health` is the right carrier: it is the only route whose response shape
-is not blocked on `nightshift-client/idea.md` §3 (see the *Deferred to Stage 0*
-section of `contracts/app-ingress.md`), and it still exercises the frozen bearer-auth
-invariant. The skeleton can therefore land without guessing at a single field of the
-real wire surface.
+`GET /app/v1/health` is the right carrier: it is core (never capability-gated,
+ADR-0006), its shape is fully specified — `200 { ok, version, uptimeSec }` from
+`nightshift-client/idea.md` §3.5 — and it still exercises the frozen bearer-auth
+invariant. It is the smallest real piece of the contract that touches every link.
+
+> *Revised by the Planner:* the original rationale here was that health was the only
+> route not blocked on `idea.md` §3. That turned out to be false — `idea.md` is public
+> and specifies the whole surface. Health remains the right carrier on the merits
+> above, but the skeleton is no longer *forced* to it by missing information.
 
 ## Definition of done
 
@@ -37,8 +41,9 @@ Compiles, runs, passes a real test, green in CI. There is nothing to deploy
 release check**: `npm pack` on each package produces a tarball containing built JS
 and `.d.ts`, proving the `prepare`-on-install path a git-tag consumer depends on.
 
-- [ ] npm workspace exists; `package-lock.json` committed; `.nvmrc` pins the Node
-      major from ADR-0001; `engines.node` set on every package.
+- [ ] npm workspace exists; `package-lock.json` committed; `.nvmrc` pins **22**
+      (ADR-0001 Amendment 1); `engines.node: ">=22"` on every package; Biome
+      configured with a CI lint job.
 - [ ] `schemas/v1/health.json` exists, is valid JSON Schema 2020-12, and carries the
       frozen `$id` prefix from ADR-0003.
 - [ ] `examples/health.json` validates against it via a repo script (`npm run

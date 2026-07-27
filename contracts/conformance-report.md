@@ -72,6 +72,11 @@ Frozen guarantees:
   never renamed or reused for a different assertion — downstream CI may allowlist or
   annotate by id.
 - `checks[].result` is `"pass"` | `"fail"` | `"skip"`.
+  **`skip` means "the agent did not declare the capability this check is gated on"**
+  (ADR-0006) — nothing else. It is never used for a check the harness chose not to
+  run, could not run, or ran inconclusively. A declared capability whose check fails
+  is a `fail`, never a `skip`. Skips do **not** affect the exit code: an agent
+  declaring only `chat` and passing every core check exits `0`.
 - `checks[].detail` carries the human explanation on failure, including what was
   expected and what was actually received. A failure detail that says only "assertion
   failed" is a bug in the harness (ADR-0005).
@@ -81,7 +86,10 @@ Frozen guarantees:
 ## Consumes
 
 - A running agent reachable at `<url>` implementing `app-ingress` (see
-  `contracts/app-ingress.md`).
+  `contracts/app-ingress.md`). The harness fetches `GET /app/v1/manifest` **first**
+  and derives the rest of the run from its `capabilities` array (ADR-0006), so a
+  malformed manifest fails the run early rather than producing a misleading partial
+  report.
 - A bearer token valid for that agent.
 - Node satisfying this repo's `engines` (ADR-0001), on the machine running CI.
 

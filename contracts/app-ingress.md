@@ -20,19 +20,41 @@ to this one.
 
 ## Exposes
 
-An agent that claims app-ingress v1 conformance exposes exactly these routes. All
-paths are relative to an agent-chosen base URL.
+All paths are relative to an agent-chosen base URL. Routes are either **core**
+(every conforming agent serves them) or **gated** by a capability the agent declares
+in its manifest — see *Capabilities* below and ADR-0006.
 
-| Method | Path | Success | Purpose |
-|---|---|---|---|
-| GET | `/app/v1/manifest` | 200 | Agent identity, capabilities, optional home UI |
-| POST | `/app/v1/messages` | 202 | Accept an InboundMessage for processing |
-| GET | `/app/v1/events` | 200 (SSE) | Live outbox stream: `ack` \| `reply` \| `notice` |
-| GET | `/app/v1/outbox` | 200 | Cursor-paged catch-up over the same events |
-| POST | `/app/v1/uploads` | 201 | Store a file, return a file id |
-| GET | `/app/v1/files/<id>` | 200 | Retrieve a previously uploaded file |
-| POST | `/app/v1/mcp` | 200 | MCP endpoint: tools + MCP Apps `ui://` resources |
-| GET | `/app/v1/health` | 200 | Liveness |
+| Method | Path | Success | Gate | Purpose |
+|---|---|---|---|---|
+| GET | `/app/v1/manifest` | 200 | core | Agent identity, capabilities, optional home UI |
+| POST | `/app/v1/messages` | 202 | core | Accept an InboundMessage for processing |
+| GET | `/app/v1/events` | 200 (SSE) | core | Live outbox stream: `ack` \| `reply` \| `notice` |
+| GET | `/app/v1/outbox` | 200 | core | Cursor-paged catch-up over the same events |
+| GET | `/app/v1/health` | 200 | core | Liveness |
+| POST | `/app/v1/uploads` | 201 | `files` | Store a file, return an upload id |
+| GET | `/app/v1/files/<id>` | 200 | `files` | Retrieve a previously uploaded file |
+| POST | `/app/v1/mcp` | 200 | `mcp-tools` or `mcp-apps-ui` | MCP endpoint: tools + MCP Apps `ui://` resources |
+
+`POST /app/v1/uploads` returns **201 Created**, not 200. No prior source specified a
+code; this contract sets it, and the harness asserts it exactly.
+
+### Capabilities
+
+The manifest declares `capabilities: string[]`. Declaring one is **binding**: the
+agent MUST serve the routes it gates, and MUST pass their checks.
+
+- `chat` — MUST be declared by every agent. Gates nothing; the chat triad is core.
+- `files` — gates `POST /uploads` and `GET /files/<id>`, including the round-trip.
+- `mcp-tools` — gates `POST /mcp`: initialize, `tools/list`, one `tools/call`.
+- `mcp-apps-ui` — gates `POST /mcp`: initialize, `resources/list`, one `ui://` fetch.
+
+A route whose capability is **not** declared MUST return **404** (still behind
+bearer auth — an unauthenticated request to it is still 401). Answering a route the
+manifest does not claim is non-conforming: the manifest would then be lying, and a
+capability-adaptive client would hide functionality that actually works.
+
+The capability vocabulary is **open**. Unknown strings MUST be ignored, never
+rejected, so new capabilities are additive (ADR-0003).
 
 ### Channel separation
 
@@ -57,10 +79,15 @@ describes a wire surface, not a runtime.
 
 ### 1. Authentication: bearer, on every route, fail closed
 
-Every route listed above requires `Authorization: Bearer <token>`. A request with a
-missing, malformed, or unrecognized token is rejected with **401** and the `error`
-shape, before any other processing and regardless of what else is wrong with the
-request.
+Every route listed above requires `Authorization: Bearer <token>` — core and gated
+alike, and including routes the agent answers with 404. A request with a missing,
+malformed, or unrecognized token is rejected with **401** and the `error` shape,
+before any other processing and regardless of what else is wrong with the request.
+**401 precedes 404:** an unauthenticated request to an undeclared route returns 401,
+never 404, so the surface is not enumerable without a token.
+
+The token is per-connection, generated at agent deploy — the `NIGHTSHIFT_API_TOKEN`
+pattern (`nightshift-client/idea.md` §3).
 
 There is no anonymous route. `/app/v1/health` is authenticated like everything else:
 liveness is not public information, and a uniform rule is one the harness can check
@@ -155,25 +182,53 @@ The manifest MAY pin a default UI surface:
 `ui://` resource the agent serves from its MCP endpoint, and clients treat it as the
 default Apps screen for that agent. When absent, the client chooses its own default.
 
-## Deferred to Stage 0 — frozen at `v1.0.0`
+## Field-level shapes — sourced, frozen at `v1.0.0`
 
-The Architect deliberately does **not** invent these. They are transcribed from
-`nightshift-client/idea.md` §3 while `schemas/v1/` is written, and are frozen the
-moment `v1.0.0` is tagged:
+The Architect deferred these rather than invent them. The Planner obtained the
+source — `nightshift-client/idea.md` §3, the product-level plan `plan.md` defers to.
+The shapes below are **transcribed from it, not designed here**, and are written into
+`schemas/v1/` by the spec stage. They freeze the moment `v1.0.0` is tagged.
 
-- Field-level shape of `inbound-message` beyond `personId` and the dedup UUID
-  (text body, attachment references, timestamps).
-- Field-level shape of `manifest` beyond `ui.home` (agent name, version,
-  declared capabilities).
-- Field-level shape of `assistant-reply` and of the `notice` payload.
-- Field-level shape of `error` (code vocabulary, message, correlation id).
-- `outbox-page` pagination fields beyond the `after` cursor semantics frozen above.
-- Upload constraints: request encoding, size limit, id format, whether
-  `GET /files/<id>` streams or redirects.
-- MCP profile: which MCP version is required, and the `ui://` resource naming rule.
+**Manifest** (§3.1) — plus the optional `ui` object decided in `plan.md` §2:
 
-Anything in this list that is still unsettled when `v1.0.0` is cut must be recorded
-in the spec as explicitly unspecified — never guessed and never left silent.
+```json
+{
+  "schema": 1,
+  "agent": { "name": "nightshift-assistant", "version": "…" },
+  "contract": { "name": "app-ingress", "version": 1 },
+  "capabilities": ["chat", "files", "mcp-tools", "mcp-apps-ui"],
+  "ui": { "home": "ui://nightshift/jobs@v1" }
+}
+```
+
+**InboundMessage** (§3.2) — the pre-existing shape reused verbatim: `schema: 1`,
+`messageId` (client-generated UUID, also the dedup key), `personId` (pinned to owner),
+`text`, `attachments` (upload ids), `receivedAt`.
+Response: `202 { ok, messageId }`.
+
+**Uploads** (§3.3) — `multipart/form-data` → `201 { ok, uploadId, path }`. The agent
+writes into its `uploads/<ts>-<name>` layout so `InboundMessage.attachments` keeps
+its meaning. **No size caps** — the Webex chunker retires with this contract.
+
+**Health** (§3.5) — `200 { ok, version, uptimeSec }`.
+
+**MCP** (§3.4) — MCP **streamable HTTP**. UI resources follow MCP Apps (SEP-1865),
+`text/html`, named `ui://<agent>/<name>@v<N>`.
+
+**Events** — `reply` carries the AssistantReply shape; `notice` carries proactive
+`send()` traffic; `ack` signals a message accepted into a session.
+
+Still genuinely unspecified, to be settled while writing `schemas/v1/` and recorded
+in the spec as explicitly open if they cannot be:
+
+- `assistant-reply` field list (idea.md names the shape and its `files` array but does
+  not enumerate it — read it off `nightshift-assistant`'s existing implementation).
+- `error` body: code vocabulary, message, correlation id.
+- `outbox-page` envelope fields beyond the `after` cursor frozen above.
+- Exact MCP protocol version required of a conforming agent.
+
+Anything still unsettled when `v1.0.0` is cut must be recorded in the spec as
+explicitly unspecified — never guessed and never left silent.
 
 ## Versioning
 
