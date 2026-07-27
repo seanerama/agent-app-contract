@@ -37,6 +37,26 @@ const problem = (msg) => {
   failures += 1;
 };
 
+/**
+ * Report a scenario's success line only if that scenario actually succeeded.
+ * Printing "ok" underneath a FAIL line is how a red build gets misread as green.
+ */
+const scenario = async (label, fn) => {
+  console.log(label);
+  const before = failures;
+  const okLine = await fn();
+  if (failures === before && okLine) console.log(`  ${okLine}`);
+};
+
+/** Surface WHICH checks failed. "expected 0, got 1" alone sends nobody anywhere. */
+const showFailedChecks = (report) => {
+  for (const check of report?.checks ?? []) {
+    if (check.result === 'fail') {
+      console.error(`       - ${check.id}: ${check.detail}`);
+    }
+  }
+};
+
 /** Poll health until the agent answers. Never sleep-and-hope. */
 const waitForReady = async (port) => {
   const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -108,74 +128,100 @@ const withMock = async (capabilities, fn) => {
 };
 
 // ---------------------------------------------------------------------------
-console.log('scenario 1: chat-only agent -> conforming, files checks skipped');
-await withMock([], async (port) => {
-  const { code, stdout, stderr } = await runHarness(port);
+await scenario('scenario 1: chat-only agent -> conforming, files checks skipped', () =>
+  withMock([], async (port) => {
+    const { code, stdout, stderr } = await runHarness(port);
 
-  if (code !== 0) problem(`expected exit 0, got ${code}\n${stderr}`);
+    let report;
+    try {
+      report = JSON.parse(stdout);
+    } catch {
+      problem(`--json stdout was not parseable JSON. Got: ${stdout.slice(0, 300)}`);
+      return null;
+    }
+
+    if (code !== 0) {
+      problem(`expected exit 0, got ${code}. Failing checks:`);
+      showFailedChecks(report);
+      if (stderr.trim()) console.error(`       harness stderr: ${stderr.trim().slice(0, 400)}`);
+    }
+    if (report.result !== 'pass') problem(`expected result "pass", got ${report.result}`);
+    if (report.counts.skipped < 1) {
+      problem('expected at least one skipped check for undeclared files');
+    }
+
+    const skipped = report.checks.filter((c) => c.result === 'skip');
+    if (!skipped.some((c) => c.id.startsWith('files.'))) {
+      problem(
+        `expected a skipped files.* check, got ${JSON.stringify(report.checks.map((c) => [c.id, c.result]))}`,
+      );
+    }
+    for (const check of skipped) {
+      if (!check.detail?.includes('does not declare')) {
+        problem(
+          `skip on ${check.id} must say which capability was undeclared, got ${check.detail}`,
+        );
+      }
+    }
+    const undeclared404 = report.checks.find((c) => c.id === 'files.undeclared.404');
+    if (undeclared404?.result !== 'pass') {
+      problem(`expected files.undeclared.404 to pass, got ${undeclared404?.result}`);
+    }
+    return `ok — exit 0, ${report.counts.passed} passed, ${report.counts.skipped} skipped`;
+  }),
+);
+
+// ---------------------------------------------------------------------------
+await scenario('scenario 2: agent declares files it does not serve -> non-conforming', () =>
+  withMock(['files'], async (port) => {
+    const { code, stdout } = await runHarness(port);
+
+    let report;
+    try {
+      report = JSON.parse(stdout);
+    } catch {
+      problem(`--json stdout was not parseable JSON. Got: ${stdout.slice(0, 300)}`);
+      return null;
+    }
+
+    if (code !== 1) {
+      problem(
+        `expected exit 1 (declaring a capability is binding), got ${code}. ` +
+          `Checks: ${JSON.stringify(report.checks.map((c) => [c.id, c.result]))}`,
+      );
+    }
+    if (report.result !== 'fail') problem(`expected result "fail", got ${report.result}`);
+
+    const served = report.checks.find((c) => c.id === 'files.uploads.served');
+    if (served?.result !== 'fail') {
+      problem(`expected files.uploads.served to FAIL, got ${served?.result}`);
+    }
+    if (report.checks.some((c) => c.id.startsWith('files.') && c.result === 'skip')) {
+      problem('a declared capability must never be reported as skip (ADR-0006)');
+    }
+    return 'ok — exit 1, declared-but-unserved capability caught';
+  }),
+);
+
+// ---------------------------------------------------------------------------
+await scenario('scenario 3: nothing listening -> unreachable, distinct from failure', async () => {
+  const port = await freePort(); // nothing is bound to it
+  const { code, stdout } = await runHarness(port);
 
   let report;
   try {
     report = JSON.parse(stdout);
   } catch {
     problem(`--json stdout was not parseable JSON. Got: ${stdout.slice(0, 300)}`);
-    return;
+    return null;
   }
-
-  if (report.result !== 'pass') problem(`expected result "pass", got ${report.result}`);
-  if (report.counts.skipped < 1)
-    problem('expected at least one skipped check for undeclared files');
-
-  const skipped = report.checks.filter((c) => c.result === 'skip');
-  if (!skipped.some((c) => c.id.startsWith('files.'))) {
-    problem(
-      `expected a skipped files.* check, got ${JSON.stringify(report.checks.map((c) => [c.id, c.result]))}`,
-    );
-  }
-  for (const check of skipped) {
-    if (!check.detail?.includes('does not declare')) {
-      problem(`skip on ${check.id} must say which capability was undeclared, got ${check.detail}`);
-    }
-  }
-  const undeclared404 = report.checks.find((c) => c.id === 'files.undeclared.404');
-  if (undeclared404?.result !== 'pass') {
-    problem(`expected files.undeclared.404 to pass, got ${undeclared404?.result}`);
-  }
-  console.log(`  ok — exit 0, ${report.counts.passed} passed, ${report.counts.skipped} skipped`);
-});
-
-// ---------------------------------------------------------------------------
-console.log('scenario 2: agent declares files it does not serve -> non-conforming');
-await withMock(['files'], async (port) => {
-  const { code, stdout } = await runHarness(port);
-
-  if (code !== 1) problem(`expected exit 1 (declaring a capability is binding), got ${code}`);
-
-  const report = JSON.parse(stdout);
-  if (report.result !== 'fail') problem(`expected result "fail", got ${report.result}`);
-
-  const served = report.checks.find((c) => c.id === 'files.uploads.served');
-  if (served?.result !== 'fail') {
-    problem(`expected files.uploads.served to FAIL, got ${served?.result}`);
-  }
-  if (report.checks.some((c) => c.id.startsWith('files.') && c.result === 'skip')) {
-    problem('a declared capability must never be reported as skip (ADR-0006)');
-  }
-  console.log(`  ok — exit 1, declared-but-unserved capability caught`);
-});
-
-// ---------------------------------------------------------------------------
-console.log('scenario 3: nothing listening -> unreachable, distinct from failure');
-{
-  const port = await freePort(); // nothing is bound to it
-  const { code, stdout } = await runHarness(port);
 
   if (code !== 2) problem(`expected exit 2 (unreachable), got ${code}`);
-  const report = JSON.parse(stdout);
-  if (report.result !== 'unreachable')
+  if (report.result !== 'unreachable') {
     problem(`expected result "unreachable", got ${report.result}`);
-  console.log('  ok — exit 2, infrastructure fault distinguished from a verdict');
-}
+  }
+  return 'ok — exit 2, infrastructure fault distinguished from a verdict';
+});
 
 if (failures > 0) {
   console.error(`\nself-proving loop FAILED — ${failures} problem(s)`);
