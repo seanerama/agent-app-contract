@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "name": "agent-app-contract",
+  "slug": "agent-app-contract",
+  "owner": "seanerama",
+  "image_prefix": "ghcr.io/seanerama/agent-app-contract",
+  "locked_at": "2026-07-27T19:58:21.980Z"
+}
