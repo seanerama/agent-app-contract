@@ -1,7 +1,43 @@
 # 0004. Distribute by pinned git tag; no deployment target
 
-- **Status:** Accepted
+- **Status:** Accepted (Amendment 1, 2026-07-27)
 - **Date:** 2026-07-27
+
+## Amendment 1 — the consumed package is the ROOT, not the workspaces
+
+The install snippet below was wrong, and was found wrong by running it (issue #6):
+**npm installs the root package of a git repo; it does not install that repo's
+workspaces.** A consumer got `node_modules/agent-app-contract/`, unbuilt, and no
+`@agent-app/*` at all.
+
+The decision to distribute by pinned git tag stands. What changes is the package
+identity — the root is the published surface, consumed by subpath:
+
+```jsonc
+"dependencies": {
+  "agent-app-contract": "github:seanerama/agent-app-contract#v1.0.0"
+}
+```
+```ts
+import type { Health } from 'agent-app-contract/types';
+```
+
+The `@agent-app/*` names are now **internal build units only**. Nothing outside this
+repo may depend on them.
+
+Four things this requires, each of which was separately broken and is now gated by
+`npm run verify:consume`:
+
+1. Root is not `private`, and declares `exports` subpaths + `bin`.
+2. Root `prepare` builds every workspace — verified to run on a real git-dep install.
+3. Root `files` lists dist directories **explicitly**. The natural
+   `packages/*/dist` glob silently ships only the two `bin` targets, because npm
+   force-includes `bin`/`main` and drops the rest of a glob it did not expand.
+4. Runtime dependencies (`ajv`) are declared on the **root**. A workspace's own
+   `dependencies` are never installed by a consumer of the root package.
+
+Registry publishing remains the deferred alternative described below; this amendment
+does not consume that option. The trigger for revisiting it is unchanged.
 
 ## Context
 
@@ -26,7 +62,7 @@ both.
 Distribution is by immutable git tag:
 
 ```jsonc
-// downstream package.json
+// downstream package.json — SUPERSEDED by Amendment 1, kept to show what was wrong
 "dependencies": {
   "@agent-app/types": "github:seanerama/agent-app-contract#v1.0.0"
 },

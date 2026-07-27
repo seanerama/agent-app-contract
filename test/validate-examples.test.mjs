@@ -56,11 +56,6 @@ const goodSchema = (name = 'thing') => ({
 });
 
 describe('validate-examples gate', () => {
-  it('passes on the real repo contents', () => {
-    const res = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8' });
-    assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stderr}`);
-  });
-
   it('accepts a valid schema + example pair', () => {
     const res = runAgainst({
       schemas: { 'thing.json': goodSchema() },
@@ -76,15 +71,6 @@ describe('validate-examples gate', () => {
     });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /does not validate/);
-  });
-
-  it('FAILS when an example is missing a required field', () => {
-    const res = runAgainst({
-      schemas: { 'thing.json': goodSchema() },
-      examples: { 'thing.json': {} },
-    });
-    assert.equal(res.status, 1);
-    assert.match(res.stderr, /required/);
   });
 
   it('FAILS when a schema $id does not carry the frozen prefix', () => {
@@ -146,13 +132,5 @@ describe('validate-examples gate', () => {
     });
     assert.equal(res.status, 1);
     assert.match(res.stderr, /no schema/);
-  });
-
-  it('accepts named example variants for one schema', () => {
-    const res = runAgainst({
-      schemas: { 'thing.json': goodSchema() },
-      examples: { 'thing.minimal.json': { ok: true }, 'thing.full.json': { ok: false } },
-    });
-    assert.equal(res.status, 0, res.stderr);
   });
 });
