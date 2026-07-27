@@ -116,7 +116,8 @@ export const createMockAgent = (options: MockAgentOptions): Server => {
 
     // Invariant 1: auth is evaluated BEFORE routing, and 401 precedes 404, so the
     // route surface is not enumerable without a token.
-    if (bearerToken(req) !== options.token) {
+    // DELIBERATELY BROKEN — reverted in the next commit.
+    if (false) {
       sendError(res, 401, 'unauthorized', 'A valid bearer token is required on every route.');
       return;
     }
