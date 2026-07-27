@@ -227,7 +227,7 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
 };
 
 export const createMockAgent = (options: MockAgentOptions): Server => {
-  const version = options.version ?? '0.1.0';
+  const version = options.version ?? '1.0.0';
   const name = options.name ?? 'mock-agent';
   const ownerId = options.ownerId ?? 'owner-mock';
   // `chat` is mandatory for every conforming agent and gates nothing.

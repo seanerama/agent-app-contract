@@ -1,6 +1,6 @@
 {
   "name": "agent-app-contract",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Frozen, additive-only app-ingress v1 contract \u2014 schemas, examples, and the conformance harness that certifies any agent.",
   "type": "module",
   "license": "MIT",

@@ -10,7 +10,7 @@
 import { EXIT, exitCodeFor } from './report.js';
 import { runConformance } from './run.js';
 
-const HARNESS_VERSION = '0.1.0';
+const HARNESS_VERSION = '1.0.0';
 
 const usage = `Usage: agent-app-conformance <url> --token <token> [--json]
 

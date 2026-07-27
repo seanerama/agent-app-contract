@@ -898,7 +898,7 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
       return buildReport(
         base,
         checks,
-        { contractVersion: '1', harnessVersion: options.harnessVersion ?? '0.1.0' },
+        { contractVersion: '1', harnessVersion: options.harnessVersion ?? '1.0.0' },
         true,
       );
     }
@@ -907,6 +907,6 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
 
   return buildReport(base, checks, {
     contractVersion: '1',
-    harnessVersion: options.harnessVersion ?? '0.1.0',
+    harnessVersion: options.harnessVersion ?? '1.0.0',
   });
 };

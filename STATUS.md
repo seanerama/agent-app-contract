@@ -3,7 +3,7 @@
 > Runtime/ops truth (framework-spec §4.6). Owned by the **Release/Deploy Operator**,
 > updated on every deploy. Records secret **locations** only — never values.
 
-**As of:** never deployed — by design
+**As of:** `v1.0.0` — never deployed, by design
 
 ## TL;DR
 
@@ -14,6 +14,22 @@ pushed"; there is no `deploy.sh`, no environment, and no runtime to be on call f
 ## Live deployment
 
 - (none, permanently — see `docs/adr/0004-distribute-by-pinned-git-tag-no-deployment-target.md`)
+
+## Released
+
+| Tag | Contract | Checks | Notes |
+|---|---|---|---|
+| `v1.0.0` | `app-ingress` v1, frozen | 23 | Full surface: 8 routes, 8 schemas, 13 examples |
+
+Consumers install the **root** package (ADR-0004 Amendment 1):
+
+```bash
+npm install github:seanerama/agent-app-contract#v1.0.0
+```
+
+The `@agent-app/*` workspace names are internal build units and are not consumable.
+`npm run verify:consume` gates this on every CI run — it packs the root, installs it
+into a throwaway project, imports every subpath, and runs the CLI from `.bin`.
 
 ## Images
 
