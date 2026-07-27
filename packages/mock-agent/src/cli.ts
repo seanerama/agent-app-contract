@@ -13,6 +13,7 @@ interface Args {
   port: number;
   token: string;
   capabilities: string[];
+  ownerId: string;
 }
 
 const usage = `Usage: mock-agent --token <token> [--port <port>] [--capabilities <csv>]
@@ -21,10 +22,14 @@ const usage = `Usage: mock-agent --token <token> [--port <port>] [--capabilities
   --port <port>          Port to listen on. Default 8787. 0 picks a free port.
   --capabilities <csv>   Extra capabilities to declare, e.g. files,mcp-tools.
                          'chat' is always declared; it is mandatory and gates nothing.
+  --owner-id <id>        Owner id every inbound personId is checked against
+                         (contract invariant 4). Default 'owner-mock'. Configured
+                         out of band, exactly like the token — the contract defines
+                         no way to discover it over the wire.
 `;
 
 const parseArgs = (argv: readonly string[]): Args => {
-  const args: Args = { port: 8787, token: '', capabilities: [] };
+  const args: Args = { port: 8787, token: '', capabilities: [], ownerId: 'owner-mock' };
 
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
@@ -51,6 +56,11 @@ const parseArgs = (argv: readonly string[]): Args => {
           .filter(Boolean);
         i += 1;
         break;
+      case '--owner-id':
+        if (value === undefined) throw new Error('--owner-id requires a value');
+        args.ownerId = value;
+        i += 1;
+        break;
       case '--help':
       case '-h':
         console.log(usage);
@@ -74,7 +84,11 @@ try {
   process.exit(2);
 }
 
-const server = createMockAgent({ token: args.token, capabilities: args.capabilities });
+const server = createMockAgent({
+  token: args.token,
+  capabilities: args.capabilities,
+  ownerId: args.ownerId,
+});
 
 server.listen(args.port, '127.0.0.1', () => {
   const address = server.address();

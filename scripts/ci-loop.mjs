@@ -28,6 +28,13 @@ const MOCK_CLI = join(ROOT, 'packages', 'mock-agent', 'dist', 'cli.js');
 const CONFORMANCE_CLI = join(ROOT, 'packages', 'conformance', 'dist', 'cli.js');
 
 const TOKEN = 'loop-test-token';
+/**
+ * The owner id the mock is configured with, and which the harness must send as
+ * `personId` (invariant 4). Passed explicitly because the contract deliberately
+ * defines no way to discover it over the wire — without it the chat-triad checks
+ * would report `skip`, and the loop would certify a surface it never exercised.
+ */
+const OWNER_ID = 'loop-test-owner';
 const READY_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 100;
 
@@ -92,7 +99,15 @@ const runHarness = (port) =>
   new Promise((resolve) => {
     const child = spawn(
       process.execPath,
-      [CONFORMANCE_CLI, `http://127.0.0.1:${port}`, '--token', TOKEN, '--json'],
+      [
+        CONFORMANCE_CLI,
+        `http://127.0.0.1:${port}`,
+        '--token',
+        TOKEN,
+        '--person-id',
+        OWNER_ID,
+        '--json',
+      ],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stdout = '';
@@ -108,7 +123,7 @@ const runHarness = (port) =>
 
 const withMock = async (capabilities, fn) => {
   const port = await freePort();
-  const args = [MOCK_CLI, '--port', String(port), '--token', TOKEN];
+  const args = [MOCK_CLI, '--port', String(port), '--token', TOKEN, '--owner-id', OWNER_ID];
   if (capabilities.length > 0) args.push('--capabilities', capabilities.join(','));
 
   const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });

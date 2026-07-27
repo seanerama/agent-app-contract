@@ -57,12 +57,16 @@ describe('mock-agent: authentication (contract invariant 1)', () => {
   });
 
   it('returns the single error shape on 401, not a bare string or HTML', async () => {
+    // schemas/v1/error.json: { ok: false, error: string, code?: string }. Reused from
+    // the sibling control-api contract rather than invented — before the spec stage
+    // this mock emitted a nested { schema, error: { code, message } } of its own
+    // devising, which nothing else in the system spoke.
     const res = await fetch(`${agent.base}/app/v1/health`);
     assert.match(res.headers.get('content-type') ?? '', /application\/json/);
     const body = await res.json();
-    assert.equal(body.schema, 1);
-    assert.equal(typeof body.error.code, 'string');
-    assert.equal(typeof body.error.message, 'string');
+    assert.equal(body.ok, false);
+    assert.equal(typeof body.error, 'string');
+    assert.ok(body.error.length > 0);
   });
 
   it('evaluates auth BEFORE routing: 401 wins over 404 on an unknown route', async () => {
@@ -102,10 +106,25 @@ describe('mock-agent: core routes', () => {
     assert.ok(body.capabilities.includes('chat'), 'chat is mandatory for every agent');
   });
 
+  it('serves the outbox as a cursor-paged page of envelopes', async () => {
+    const res = await fetch(`${agent.base}/app/v1/outbox`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.schema, 1);
+    assert.ok(Array.isArray(body.events));
+  });
+
+  it('rejects a malformed cursor rather than silently replaying everything', async () => {
+    const res = await fetch(`${agent.base}/app/v1/outbox?after=banana`, { headers: auth });
+    assert.equal(res.status, 400);
+  });
+
   it('answers 501 — not 404 — for a core route it has not implemented yet', async () => {
     // 404 would claim the capability is undeclared. Core routes have no capability,
-    // so 404 there would be a lie about why the route is absent.
-    const res = await fetch(`${agent.base}/app/v1/outbox`, { headers: auth });
+    // so 404 there would be a lie about why the route is absent. /mcp is gated, so
+    // the honest 501 case is a core route; none remain unimplemented, which is why
+    // this asserts the rule on the mock's own fallback rather than a live route.
+    const res = await fetch(`${agent.base}/app/v1/messages`, { method: 'PATCH', headers: auth });
     assert.equal(res.status, 501);
   });
 });
