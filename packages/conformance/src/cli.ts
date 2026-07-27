@@ -16,6 +16,11 @@ const usage = `Usage: agent-app-conformance <url> --token <token> [--json]
 
   <url>              Base URL of the agent under test. The harness appends /app/v1/...
   --token <token>    Bearer token presented on authenticated checks. Required.
+  --person-id <id>   Owner id to send as personId (contract invariant 4). Optional.
+                     Without it the chat-triad checks report skip: the agent rejects
+                     a foreign personId by design, and the contract defines no way to
+                     discover the owner id over the wire — it is configured out of
+                     band, exactly like the token.
   --json             Emit the machine-readable report on stdout instead of human output.
 
 Exit codes:
@@ -27,12 +32,22 @@ Exit codes:
 const argv = process.argv.slice(2);
 let url = '';
 let token = '';
+let personId = '';
 let json = false;
 
 for (let i = 0; i < argv.length; i += 1) {
   const arg = argv[i];
   if (arg === '--json') {
     json = true;
+  } else if (arg === '--person-id') {
+    const value = argv[i + 1];
+    if (value === undefined) {
+      console.error('agent-app-conformance: --person-id requires a value\n');
+      console.error(usage);
+      process.exit(EXIT.UNREACHABLE);
+    }
+    personId = value;
+    i += 1;
   } else if (arg === '--token') {
     const value = argv[i + 1];
     if (value === undefined) {
@@ -66,7 +81,14 @@ if (url === '' || token === '') {
   process.exit(EXIT.UNREACHABLE);
 }
 
-const report = await runConformance({ baseUrl: url, token, harnessVersion: HARNESS_VERSION });
+const report = await runConformance({
+  baseUrl: url,
+  token,
+  harnessVersion: HARNESS_VERSION,
+  // exactOptionalPropertyTypes: omit the key entirely rather than pass undefined,
+  // so "not supplied" stays distinguishable from "supplied as empty".
+  ...(personId === '' ? {} : { personId }),
+});
 
 if (json) {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

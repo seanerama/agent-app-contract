@@ -1,7 +1,7 @@
 {
   "name": "agent-app-contract",
   "version": "0.1.0",
-  "description": "Frozen, additive-only app-ingress v1 contract — schemas, examples, and the conformance harness that certifies any agent.",
+  "description": "Frozen, additive-only app-ingress v1 contract \u2014 schemas, examples, and the conformance harness that certifies any agent.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -11,7 +11,7 @@
   "workspaces": [
     "packages/*"
   ],
-  "//": "Consumption (ADR-0004 Amendment 1): the ROOT is the consumed package. `npm i github:seanerama/agent-app-contract#vX.Y.Z` installs this manifest, runs `prepare`, and that builds every workspace. The `@agent-app/*` names are internal-only — npm does not install a git repo's workspaces, which is what broke issue #6.",
+  "//": "Consumption (ADR-0004 Amendment 1): the ROOT is the consumed package. `npm i github:seanerama/agent-app-contract#vX.Y.Z` installs this manifest, runs `prepare`, and that builds every workspace. The `@agent-app/*` names are internal-only \u2014 npm does not install a git repo's workspaces, which is what broke issue #6.",
   "files": [
     "packages/types/dist",
     "packages/conformance/dist",
@@ -53,14 +53,14 @@
     "verify:consume": "node scripts/verify-consume.mjs",
     "prepare": "npm run build"
   },
-  "//dependencies": "The shipped `dist/` imports ajv at runtime. It is declared HERE, not only on the workspaces, because a consumer installs THIS manifest — a workspace's own `dependencies` are never seen by anyone installing the git tag.",
+  "//dependencies": "The shipped `dist/` imports ajv at runtime. It is declared HERE, not only on the workspaces, because a consumer installs THIS manifest \u2014 a workspace's own `dependencies` are never seen by anyone installing the git tag.",
   "dependencies": {
-    "ajv": "8.20.0"
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
     "@types/node": "22.20.0",
-    "ajv-formats": "3.0.1",
     "typescript": "6.0.3"
   },
   "engines": {

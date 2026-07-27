@@ -316,6 +316,13 @@ may be assumed by a client or asserted by the harness.
 4. **SSE keep-alive interval.** Agents may send comment-only pings; no cadence is
    required and clients MUST NOT infer liveness from their absence.
 5. **Outbox page size cap.** Agent's choice. Clients page by cursor regardless.
+6. **How a client learns the owner id.** Invariant 4 requires `personId` to equal the
+   agent's configured owner id, but this contract defines no route that reveals it.
+   That is deliberate, not an oversight: the owner id is configured out of band,
+   exactly as the bearer token is, and a route that disclosed it would hand an
+   attacker with a stolen token one more true fact. The conformance harness therefore
+   takes it as a `--person-id` flag and reports the chat-triad checks as `skip` when
+   it is absent, rather than failing an agent for a fact the harness was never given.
 
 ## Versioning
 
