@@ -187,8 +187,87 @@ await scenario('scenario 1: chat-only agent -> conforming, files checks skipped'
 );
 
 // ---------------------------------------------------------------------------
-await scenario('scenario 2: agent declares files it does not serve -> non-conforming', () =>
-  withMock(['files'], async (port) => {
+await scenario('scenario 2: agent declaring everything -> conforming, NOTHING skipped', () =>
+  withMock(['files', 'mcp-tools', 'mcp-apps-ui'], async (port) => {
+    const { code, stdout } = await runHarness(port);
+
+    let report;
+    try {
+      report = JSON.parse(stdout);
+    } catch {
+      problem(`--json stdout was not parseable JSON. Got: ${stdout.slice(0, 300)}`);
+      return null;
+    }
+
+    if (code !== 0) {
+      problem(
+        `expected exit 0, got ${code}. Failing checks: ` +
+          JSON.stringify(
+            report.checks.filter((c) => c.result === 'fail'),
+            null,
+            2,
+          ),
+      );
+    }
+
+    // The point of this scenario. Scenario 1 passes partly BY SKIPPING the gated
+    // checks, so on its own it cannot tell "the files checks pass" from "the files
+    // checks never ran". Zero skips is what proves every check is exercised.
+    const skipped = report.checks.filter((c) => c.result === 'skip');
+    if (skipped.length > 0) {
+      problem(
+        'an agent declaring every capability must skip NOTHING, or the gated checks ' +
+          `are never exercised anywhere. Skipped: ${JSON.stringify(skipped.map((c) => c.id))}`,
+      );
+    }
+    return `ok — exit 0, ${report.counts.passed} passed, 0 skipped`;
+  }),
+);
+
+// ---------------------------------------------------------------------------
+await scenario('scenario 3: declared-but-unserved capability -> non-conforming', async () => {
+  // A deliberately non-conforming agent, in process. It is NOT the mock: the mock is
+  // built to conform, and breaking it to prove the loop can fail would mean breaking
+  // the very thing the loop certifies. This is the loop's own "watch it go red" —
+  // a gate nobody has seen fail is decoration (docs/walking-skeleton.md).
+  const { createServer } = await import('node:http');
+  const send = (res, status, body) => {
+    const payload = JSON.stringify(body);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  };
+
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${TOKEN}`) {
+      send(res, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+    const path = new URL(req.url, 'http://x').pathname.replace(/\/+$/, '');
+    if (path === '/app/v1/manifest') {
+      send(res, 200, {
+        schema: 1,
+        agent: { name: 'broken', version: '0.0.0' },
+        contract: { name: 'app-ingress', version: 1 },
+        // Declares files. Does not serve it. Declaring is binding (ADR-0006).
+        capabilities: ['chat', 'files'],
+      });
+      return;
+    }
+    if (path === '/app/v1/health') {
+      send(res, 200, { ok: true, version: '0.0.0', uptimeSec: 1 });
+      return;
+    }
+    send(res, 404, { ok: false, error: 'not found' });
+  });
+
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const port = server.address().port;
+
+  try {
     const { code, stdout } = await runHarness(port);
 
     let report;
@@ -207,19 +286,21 @@ await scenario('scenario 2: agent declares files it does not serve -> non-confor
     }
     if (report.result !== 'fail') problem(`expected result "fail", got ${report.result}`);
 
-    const served = report.checks.find((c) => c.id === 'files.uploads.served');
-    if (served?.result !== 'fail') {
-      problem(`expected files.uploads.served to FAIL, got ${served?.result}`);
+    const upload = report.checks.find((c) => c.id === 'files.upload.201');
+    if (upload?.result !== 'fail') {
+      problem(`expected files.upload.201 to FAIL, got ${upload?.result}`);
     }
     if (report.checks.some((c) => c.id.startsWith('files.') && c.result === 'skip')) {
       problem('a declared capability must never be reported as skip (ADR-0006)');
     }
     return 'ok — exit 1, declared-but-unserved capability caught';
-  }),
-);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
 
 // ---------------------------------------------------------------------------
-await scenario('scenario 3: nothing listening -> unreachable, distinct from failure', async () => {
+await scenario('scenario 4: nothing listening -> unreachable, distinct from failure', async () => {
   const port = await freePort(); // nothing is bound to it
   const { code, stdout } = await runHarness(port);
 

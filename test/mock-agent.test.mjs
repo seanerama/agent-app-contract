@@ -142,13 +142,14 @@ describe('mock-agent: capability gating (ADR-0006)', () => {
 
   it('stops 404ing that route once the capability IS declared', async () => {
     // 404 is reserved for "undeclared". Once files is declared the route must stop
-    // 404ing; this mock has not built uploads yet, so it says 501 — honestly
-    // non-conforming, and distinguishable from correct gating. The harness treats
-    // that 501 as a failure, which is what loop scenario 2 proves.
+    // 404ing — what it answers instead depends on the request (here: 400, because an
+    // empty body is not multipart). The assertion is deliberately "not 404" rather
+    // than a specific code: 404 is the ONLY answer the contract forbids here, and
+    // pinning the rest would make this test fail for reasons unrelated to gating.
     const agent = await startAgent(['files']);
     try {
       const res = await fetch(`${agent.base}/app/v1/uploads`, { method: 'POST', headers: auth });
-      assert.equal(res.status, 501, 'declaring a capability is binding (ADR-0006)');
+      assert.notEqual(res.status, 404, 'declaring a capability is binding (ADR-0006)');
     } finally {
       await agent.close();
     }
@@ -180,7 +181,7 @@ describe('mock-agent: capability gating (ADR-0006)', () => {
     const agent = await startAgent(['mcp-apps-ui']);
     try {
       const res = await fetch(`${agent.base}/app/v1/mcp`, { method: 'POST', headers: auth });
-      assert.equal(res.status, 501, 'declared via mcp-apps-ui alone, so it must not 404');
+      assert.notEqual(res.status, 404, 'declared via mcp-apps-ui alone, so it must not 404');
     } finally {
       await agent.close();
     }

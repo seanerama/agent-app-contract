@@ -171,6 +171,9 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
       detail: `agent does not declare '${capability}'`,
     });
 
+  const eventsOfBody = (body: unknown): Array<{ id: number; type: string; payload: unknown }> =>
+    (body as { events?: Array<{ id: number; type: string; payload: unknown }> })?.events ?? [];
+
   const request = async (
     path: string,
     init: RequestInit & { auth?: boolean } = {},
@@ -216,6 +219,7 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
   const validateError = compile(ajv, 'error');
   const validateOutboxPage = compile(ajv, 'outbox-page');
   const validateAssistantReply = compile(ajv, 'assistant-reply');
+  const validateUploadResponse = compile(ajv, 'upload-response');
 
   // ---------------------------------------------------------------------------
   // Manifest first. ADR-0006 makes the run manifest-driven, so a malformed manifest
@@ -332,29 +336,166 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
     // route must 404 — answering anyway makes the manifest a lie.
     // -------------------------------------------------------------------------
     if (capabilities.includes('files')) {
-      const uploads = await request('/app/v1/uploads', { method: 'POST' });
-      // Both 404 and 501 mean the route is not actually served. They are checked
-      // separately because they say different things about the agent, and a detail
-      // that names the wrong cause sends the implementer down the wrong path.
-      if (uploads.status === 404) {
+      // Build the multipart body by hand rather than sharing a helper with the mock
+      // (ADR-0005 rule 1) — a shared encoder would hide a framing bug from both sides.
+      const boundary = `----conformance${crypto.randomUUID()}`;
+      const fileBody = `conformance-probe-${crypto.randomUUID()}`;
+      const multipart = [
+        `--${boundary}`,
+        'content-disposition: form-data; name="file"; filename="probe.txt"',
+        'content-type: text/plain',
+        '',
+        fileBody,
+        `--${boundary}--`,
+        '',
+      ].join('\r\n');
+
+      const upload = await request('/app/v1/uploads', {
+        method: 'POST',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        body: multipart,
+      });
+
+      let uploadId: string | null = null;
+
+      if (upload.status === 404) {
         fail(
-          'files.uploads.served',
-          'POST /uploads is served when files is declared',
+          'files.upload.201',
+          'POST /uploads returns 201 with a valid upload-response',
           "the manifest declares 'files', so /app/v1/uploads must not 404. Either serve " +
             'the route or stop declaring the capability — declaring is binding (ADR-0006).',
         );
-      } else if (uploads.status === 501) {
+      } else if (upload.status === 501) {
         fail(
-          'files.uploads.served',
-          'POST /uploads is served when files is declared',
+          'files.upload.201',
+          'POST /uploads returns 201 with a valid upload-response',
           "the manifest declares 'files' but /app/v1/uploads answers 501 Not Implemented. " +
             'A declared capability must be served, not merely routed.',
         );
+      } else if (upload.status !== 201) {
+        fail(
+          'files.upload.201',
+          'POST /uploads returns 201 with a valid upload-response',
+          `expected 201 Created, got ${upload.status}. The contract sets 201 explicitly ` +
+            `and the harness asserts it exactly. Body: ${upload.raw.slice(0, 200)}`,
+        );
+      } else if (!validateUploadResponse(upload.body)) {
+        fail(
+          'files.upload.201',
+          'POST /uploads returns 201 with a valid upload-response',
+          `201 but body violates upload-response.json: ${describeErrors(validateUploadResponse)}`,
+        );
       } else {
-        pass('files.uploads.served', 'POST /uploads is served when files is declared');
+        pass('files.upload.201', 'POST /uploads returns 201 with a valid upload-response');
+        uploadId = (upload.body as { uploadId: string }).uploadId;
+      }
+
+      // An unknown file id must 404 with the error shape — not 200 with an empty body,
+      // and not a framework default.
+      const missing = await request(`/app/v1/files/definitely-not-a-file-${crypto.randomUUID()}`);
+      if (missing.status === 404 && validateError(missing.body)) {
+        pass('files.download.404', 'GET /files/<unknown> returns 404 with the error shape');
+      } else {
+        fail(
+          'files.download.404',
+          'GET /files/<unknown> returns 404 with the error shape',
+          `expected 404 with an error body, got ${missing.status} ` +
+            `and ${missing.raw.slice(0, 200)}`,
+        );
+      }
+
+      // The round trip a real client performs: upload, reference it in a message,
+      // receive it back on the reply, download it. Each leg is meaningless alone.
+      if (uploadId === null) {
+        // NOT a skip. The agent declared `files`, so the round trip is required, and
+        // reporting "skip" here would hide a real failure behind a status that means
+        // "legitimately opted out" (ADR-0006). Declaring is binding.
+        fail(
+          'files.roundtrip',
+          'An uploaded file survives message -> reply -> download intact',
+          "the manifest declares 'files' but the upload leg did not return an uploadId, so " +
+            'the round trip cannot even begin. See the files.upload.201 failure above.',
+        );
+      } else if (options.personId === undefined) {
+        // A genuine harness-input gap rather than an agent property: without the owner
+        // id no message can be accepted to carry the attachment.
+        checks.push({
+          id: 'files.roundtrip',
+          title: 'An uploaded file survives message -> reply -> download intact',
+          result: 'skip',
+          detail: 'no --person-id supplied, so no message can be accepted to carry the attachment',
+        });
+      } else {
+        const messageId = crypto.randomUUID();
+        const cursor = eventsOfBody((await request('/app/v1/outbox')).body).at(-1)?.id ?? 0;
+        await request('/app/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            schema: 1,
+            messageId,
+            personId: options.personId,
+            text: 'conformance: attachment round trip',
+            attachments: [uploadId],
+            receivedAt: new Date().toISOString(),
+          }),
+        });
+
+        const deadline = Date.now() + timeoutMs;
+        let reply: { payload: unknown } | undefined;
+        while (reply === undefined && Date.now() < deadline) {
+          const page = eventsOfBody((await request(`/app/v1/outbox?after=${cursor}`)).body);
+          reply = page.find((e) => e.type === 'reply');
+          if (reply === undefined) await new Promise((r) => setTimeout(r, 50));
+        }
+
+        const replyFiles = (reply?.payload as { files?: string[] } | undefined)?.files ?? [];
+        if (reply === undefined) {
+          fail(
+            'files.roundtrip',
+            'An uploaded file survives message -> reply -> download intact',
+            `no reply event arrived within ${timeoutMs}ms to carry the attachment back`,
+          );
+        } else if (!replyFiles.includes(uploadId)) {
+          fail(
+            'files.roundtrip',
+            'An uploaded file survives message -> reply -> download intact',
+            `the reply did not reference the uploaded file. Sent attachment ` +
+              `${JSON.stringify(uploadId)}, reply.files was ${JSON.stringify(replyFiles)}. ` +
+              'An agent declaring `files` must serve every id it emits.',
+          );
+        } else {
+          const download = await request(`/app/v1/files/${encodeURIComponent(uploadId)}`);
+          if (download.status !== 200) {
+            fail(
+              'files.roundtrip',
+              'An uploaded file survives message -> reply -> download intact',
+              `GET /files/${uploadId} returned ${download.status}; an agent must serve ` +
+                'every file id it emits in assistant-reply.files.',
+            );
+          } else if (download.raw !== fileBody) {
+            fail(
+              'files.roundtrip',
+              'An uploaded file survives message -> reply -> download intact',
+              `downloaded bytes differ from what was uploaded. Sent ${JSON.stringify(fileBody)}, ` +
+                `got ${JSON.stringify(download.raw.slice(0, 100))}.`,
+            );
+          } else {
+            pass(
+              'files.roundtrip',
+              'An uploaded file survives message -> reply -> download intact',
+            );
+          }
+        }
       }
     } else {
-      skip('files.uploads.served', 'POST /uploads is served when files is declared', 'files');
+      skip('files.upload.201', 'POST /uploads returns 201 with a valid upload-response', 'files');
+      skip('files.download.404', 'GET /files/<unknown> returns 404 with the error shape', 'files');
+      skip(
+        'files.roundtrip',
+        'An uploaded file survives message -> reply -> download intact',
+        'files',
+      );
 
       const uploads = await request('/app/v1/uploads', { method: 'POST' });
       if (uploads.status === 404) {
@@ -367,6 +508,122 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
             'answering this route would make the manifest a lie and would hide working ' +
             'functionality from a capability-adaptive client (ADR-0006).',
         );
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // MCP (gated by mcp-tools and/or mcp-apps-ui). The two capabilities gate
+    // DIFFERENT halves of the same endpoint, so they are checked independently.
+    // -------------------------------------------------------------------------
+    const rpc = async (method: string, params?: unknown): Promise<Fetched> =>
+      request('/app/v1/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method,
+          ...(params === undefined ? {} : { params }),
+        }),
+      });
+
+    const rpcResult = (res: Fetched): Record<string, unknown> | null => {
+      const body = res.body as { result?: Record<string, unknown> } | null;
+      return body?.result ?? null;
+    };
+
+    const declaresMcp = capabilities.includes('mcp-tools') || capabilities.includes('mcp-apps-ui');
+
+    if (!declaresMcp) {
+      skip('mcp.initialize', 'POST /mcp completes an MCP initialize handshake', 'mcp-tools');
+      skip('mcp.tools', 'tools/list and tools/call work', 'mcp-tools');
+      skip('mcp.ui', 'A ui:// resource is listed and readable as text/html', 'mcp-apps-ui');
+
+      const mcp = await rpc('initialize');
+      if (mcp.status === 404) {
+        pass('mcp.undeclared.404', 'POST /mcp returns 404 when no MCP capability is declared');
+      } else {
+        fail(
+          'mcp.undeclared.404',
+          'POST /mcp returns 404 when no MCP capability is declared',
+          `expected 404, got ${mcp.status}. Answering an endpoint the manifest does not ` +
+            'claim makes the manifest a lie (ADR-0006).',
+        );
+      }
+    } else {
+      const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+      const initResult = rpcResult(init);
+      // The contract pins NO protocol version, so this asserts the handshake completed
+      // and named a version — never which version.
+      if (init.status === 200 && typeof initResult?.protocolVersion === 'string') {
+        pass('mcp.initialize', 'POST /mcp completes an MCP initialize handshake');
+      } else {
+        fail(
+          'mcp.initialize',
+          'POST /mcp completes an MCP initialize handshake',
+          `expected 200 with result.protocolVersion, got ${init.status} and ` +
+            `${init.raw.slice(0, 200)}. The contract does not pin a protocol version; it ` +
+            'requires only that initialize succeeds and names one.',
+        );
+      }
+
+      if (capabilities.includes('mcp-tools')) {
+        const list = rpcResult(await rpc('tools/list'));
+        const tools = (list?.tools ?? []) as Array<{ name?: string }>;
+        if (!Array.isArray(tools) || tools.length === 0) {
+          fail(
+            'mcp.tools',
+            'tools/list and tools/call work',
+            "the manifest declares 'mcp-tools', so tools/list must return at least one " +
+              `tool. Got ${JSON.stringify(list)}`,
+          );
+        } else {
+          const first = tools[0]?.name;
+          const called = await rpc('tools/call', { name: first, arguments: {} });
+          const callResult = rpcResult(called);
+          if (called.status === 200 && Array.isArray(callResult?.content)) {
+            pass('mcp.tools', 'tools/list and tools/call work');
+          } else {
+            fail(
+              'mcp.tools',
+              'tools/list and tools/call work',
+              `tools/call on the first advertised tool (${String(first)}) did not return ` +
+                `a content array. Got ${called.raw.slice(0, 200)}. A listed tool must be callable.`,
+            );
+          }
+        }
+      } else {
+        skip('mcp.tools', 'tools/list and tools/call work', 'mcp-tools');
+      }
+
+      if (capabilities.includes('mcp-apps-ui')) {
+        const list = rpcResult(await rpc('resources/list'));
+        const resources = (list?.resources ?? []) as Array<{ uri?: string }>;
+        const ui = resources.find((r) => r.uri?.startsWith('ui://'));
+        if (ui?.uri === undefined) {
+          fail(
+            'mcp.ui',
+            'A ui:// resource is listed and readable as text/html',
+            "the manifest declares 'mcp-apps-ui', so resources/list must advertise at " +
+              `least one ui:// resource. Got ${JSON.stringify(resources)}`,
+          );
+        } else {
+          const read = rpcResult(await rpc('resources/read', { uri: ui.uri }));
+          const contents = (read?.contents ?? []) as Array<{ mimeType?: string; text?: string }>;
+          const html = contents.find((c) => c.mimeType === 'text/html');
+          if (html?.text !== undefined && html.text.length > 0) {
+            pass('mcp.ui', 'A ui:// resource is listed and readable as text/html');
+          } else {
+            fail(
+              'mcp.ui',
+              'A ui:// resource is listed and readable as text/html',
+              `reading ${ui.uri} did not return text/html contents. MCP Apps resources are ` +
+                `text/html by definition. Got ${JSON.stringify(contents).slice(0, 200)}`,
+            );
+          }
+        }
+      } else {
+        skip('mcp.ui', 'A ui:// resource is listed and readable as text/html', 'mcp-apps-ui');
       }
     }
 
@@ -392,10 +649,7 @@ export const runConformance = async (options: RunOptions): Promise<Report> => {
     const outboxPage = async (after?: number): Promise<Fetched> =>
       request(after === undefined ? '/app/v1/outbox' : `/app/v1/outbox?after=${after}`);
 
-    const eventsOf = (body: unknown): Array<{ id: number; type: string; payload: unknown }> => {
-      const page = body as { events?: Array<{ id: number; type: string; payload: unknown }> };
-      return page.events ?? [];
-    };
+    const eventsOf = eventsOfBody;
 
     const firstPage = await outboxPage();
     if (firstPage.status !== 200) {

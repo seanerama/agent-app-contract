@@ -58,6 +58,18 @@ const GATED_ROUTES: ReadonlyArray<{ path: string; capabilities: readonly string[
 /** Refuse absurd bodies rather than buffering them. Not a contract rule. */
 const MAX_BODY_BYTES = 1_000_000;
 
+/**
+ * Returned from `initialize` only when the client names no version of its own.
+ *
+ * The contract pins NO MCP protocol version — see "Explicitly unspecified" in
+ * contracts/app-ingress.md. This constant is this mock's own answer, not a
+ * conformance requirement, and the harness must never assert on its value.
+ */
+const MCP_FALLBACK_PROTOCOL_VERSION = '2025-06-18';
+
+/** The one UI resource this mock publishes. Naming: ui://<agent>/<name>@v<N>. */
+const UI_RESOURCE = 'ui://mock-agent/home@v1';
+
 export interface MockAgentOptions {
   /** Bearer token this agent accepts. Every route requires it. */
   token: string;
@@ -87,6 +99,7 @@ const SCHEMA_DIR = join(fileURLToPath(new URL('.', import.meta.url)), 'schemas',
 
 interface Validators {
   health: ValidateFunction;
+  uploadResponse: ValidateFunction;
   manifest: ValidateFunction;
   inboundMessage: ValidateFunction;
   outboxPage: ValidateFunction;
@@ -112,6 +125,7 @@ const loadValidators = (): Validators => {
     manifest: ajv.compile(read('manifest.json')),
     inboundMessage: ajv.compile(read('inbound-message.json')),
     outboxPage: ajv.compile(read('outbox-page.json')),
+    uploadResponse: ajv.compile(read('upload-response.json')),
     eventEnvelope: ajv.getSchema(
       'https://seanerama.github.io/agent-app-contract/schemas/v1/event-envelope.json',
     ) as ValidateFunction,
@@ -143,6 +157,61 @@ const bearerToken = (req: IncomingMessage): string | null => {
   if (typeof header !== 'string') return null;
   const match = /^Bearer (.+)$/.exec(header);
   return match?.[1] ?? null;
+};
+
+/**
+ * Minimal multipart/form-data reader — enough to pull the first file part out.
+ *
+ * Deliberately not a dependency: the contract says `multipart/form-data` in and an
+ * upload id out, and a reference implementation that reached for a parser library
+ * would hide how little the contract actually requires.
+ */
+const firstFilePart = (
+  body: Buffer,
+  contentType: string,
+): { filename: string; contentType: string; bytes: Buffer } | null => {
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2])?.trim();
+  if (boundary === undefined) return null;
+
+  const delimiter = Buffer.from(`--${boundary}`);
+  const parts: Buffer[] = [];
+  let index = body.indexOf(delimiter);
+  while (index !== -1) {
+    const start = index + delimiter.length;
+    const next = body.indexOf(delimiter, start);
+    if (next === -1) break;
+    // Trim the CRLF that opens the part and the CRLF that closes it.
+    parts.push(body.subarray(start + 2, next - 2));
+    index = next;
+  }
+
+  for (const part of parts) {
+    const split = part.indexOf('\r\n\r\n');
+    if (split === -1) continue;
+    const headers = part.subarray(0, split).toString('utf8');
+    const filename = /filename="([^"]*)"/i.exec(headers)?.[1];
+    if (filename === undefined || filename === '') continue;
+    const partType = /content-type:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim();
+    return {
+      filename,
+      contentType: partType ?? 'application/octet-stream',
+      bytes: part.subarray(split + 4),
+    };
+  }
+  return null;
+};
+
+const readRawBody = async (req: IncomingMessage): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) throw new Error('body too large');
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
 };
 
 const readBody = async (req: IncomingMessage): Promise<string> => {
@@ -191,6 +260,7 @@ export const createMockAgent = (options: MockAgentOptions): Server => {
   let nextId = 1;
   const seenMessageIds = new Set<string>();
   const streams = new Set<ServerResponse>();
+  const files = new Map<string, { filename: string; contentType: string; bytes: Buffer }>();
 
   const emit = (type: string, payload: Record<string, unknown>): EventEnvelope => {
     const event: EventEnvelope = {
@@ -316,10 +386,17 @@ export const createMockAgent = (options: MockAgentOptions): Server => {
           // The reply arrives LATER, off the request path — that is the whole point
           // of 202. setImmediate keeps that ordering real rather than pretending.
           setImmediate(() => {
+            // Echo the attachments back as reply files. Under the contract these are
+            // ids retrievable from GET /files/<id> — which is exactly what the upload
+            // ids are — so this closes the round trip a client actually performs:
+            // upload -> reference in a message -> receive back -> download.
+            const echoed = declares(['files'])
+              ? message.attachments.filter((id) => files.has(id))
+              : [];
             emit('reply', {
               schema: 1,
               text: `mock-agent received: ${message.text}`,
-              files: [],
+              files: echoed,
             });
           });
         }
@@ -372,6 +449,185 @@ export const createMockAgent = (options: MockAgentOptions): Server => {
         return;
       }
       sendJson(res, 200, page);
+      return;
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /uploads — gated by `files`. 201, not 200 (the contract sets this).
+    // -------------------------------------------------------------------------
+    if (path === '/app/v1/uploads' && req.method === 'POST') {
+      void (async () => {
+        let raw: Buffer;
+        try {
+          raw = await readRawBody(req);
+        } catch {
+          sendError(res, 413, 'Request body is too large.', 'body_too_large');
+          return;
+        }
+
+        const part = firstFilePart(raw, req.headers['content-type'] ?? '');
+        if (part === null) {
+          sendError(res, 400, 'Expected multipart/form-data with a file part.', 'invalid_body');
+          return;
+        }
+
+        // The agent's existing uploads/<ts>-<name> layout, so that an attachment id
+        // keeps its original meaning for a session manager reading the same disk.
+        const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', 'T');
+        const safeName = part.filename.replace(/[^\w.-]/g, '_');
+        const uploadId = `up_${stamp}-${safeName}`;
+        files.set(uploadId, part);
+
+        const body = { ok: true, uploadId, path: `uploads/${stamp}-${safeName}` };
+        if (!validators.uploadResponse(body)) {
+          sendError(res, 500, 'upload response failed its own schema', 'internal');
+          return;
+        }
+        sendJson(res, 201, body);
+      })();
+      return;
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /files/<id> — gated by `files`. Bytes, not JSON.
+    // -------------------------------------------------------------------------
+    if (path.startsWith('/app/v1/files/') && req.method === 'GET') {
+      const id = decodeURIComponent(path.slice('/app/v1/files/'.length));
+      const stored = files.get(id);
+      if (stored === undefined) {
+        sendError(res, 404, `No such file: ${id}`, 'not_found');
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': stored.contentType,
+        'content-length': stored.bytes.length,
+      });
+      res.end(stored.bytes);
+      return;
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /mcp — MCP streamable HTTP. Tools and UI resources are gated SEPARATELY:
+    // an agent declaring only mcp-tools must not answer resources/*, and vice versa,
+    // or the manifest would again be describing a surface that is not there.
+    // -------------------------------------------------------------------------
+    if (path === '/app/v1/mcp' && req.method === 'POST') {
+      void (async () => {
+        let raw: string;
+        try {
+          raw = await readBody(req);
+        } catch {
+          sendError(res, 413, 'Request body is too large.', 'body_too_large');
+          return;
+        }
+
+        let rpc: { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
+        try {
+          rpc = JSON.parse(raw);
+        } catch {
+          sendJson(res, 400, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error' },
+          });
+          return;
+        }
+
+        const id = rpc.id ?? null;
+        const ok = (result: unknown) => sendJson(res, 200, { jsonrpc: '2.0', id, result });
+        const rpcError = (code: number, message: string) =>
+          sendJson(res, 200, { jsonrpc: '2.0', id, error: { code, message } });
+
+        // A notification (no id) gets no body — the client is not waiting on one.
+        if (rpc.id === undefined && rpc.method?.startsWith('notifications/')) {
+          res.writeHead(202).end();
+          return;
+        }
+
+        switch (rpc.method) {
+          case 'initialize': {
+            const requested = (rpc.params as { protocolVersion?: string } | undefined)
+              ?.protocolVersion;
+            ok({
+              // Echo the client's version when it names one. The contract pins NO
+              // protocol version (see "Explicitly unspecified"), so asserting a
+              // particular string here would invent a conformance rule.
+              protocolVersion: requested ?? MCP_FALLBACK_PROTOCOL_VERSION,
+              capabilities: {
+                ...(declares(['mcp-tools']) ? { tools: {} } : {}),
+                ...(declares(['mcp-apps-ui']) ? { resources: {} } : {}),
+              },
+              serverInfo: { name, version },
+            });
+            return;
+          }
+          case 'tools/list': {
+            if (!declares(['mcp-tools'])) {
+              rpcError(-32601, 'This agent does not declare mcp-tools.');
+              return;
+            }
+            ok({
+              tools: [
+                {
+                  name: 'status',
+                  description: 'Return the agent status. A thin door, no business logic.',
+                  inputSchema: { type: 'object', properties: {} },
+                },
+              ],
+            });
+            return;
+          }
+          case 'tools/call': {
+            if (!declares(['mcp-tools'])) {
+              rpcError(-32601, 'This agent does not declare mcp-tools.');
+              return;
+            }
+            const toolName = (rpc.params as { name?: string } | undefined)?.name;
+            if (toolName !== 'status') {
+              rpcError(-32602, `Unknown tool: ${String(toolName)}`);
+              return;
+            }
+            ok({
+              content: [
+                { type: 'text', text: JSON.stringify({ ok: true, version, uptimeSec: 1 }) },
+              ],
+              isError: false,
+            });
+            return;
+          }
+          case 'resources/list': {
+            if (!declares(['mcp-apps-ui'])) {
+              rpcError(-32601, 'This agent does not declare mcp-apps-ui.');
+              return;
+            }
+            ok({ resources: [{ uri: UI_RESOURCE, name: 'home', mimeType: 'text/html' }] });
+            return;
+          }
+          case 'resources/read': {
+            if (!declares(['mcp-apps-ui'])) {
+              rpcError(-32601, 'This agent does not declare mcp-apps-ui.');
+              return;
+            }
+            const uri = (rpc.params as { uri?: string } | undefined)?.uri;
+            if (uri !== UI_RESOURCE) {
+              rpcError(-32602, `Unknown resource: ${String(uri)}`);
+              return;
+            }
+            ok({
+              contents: [
+                {
+                  uri: UI_RESOURCE,
+                  mimeType: 'text/html',
+                  text: '<!doctype html><title>mock</title><p>mock-agent home</p>',
+                },
+              ],
+            });
+            return;
+          }
+          default:
+            rpcError(-32601, `Method not found: ${String(rpc.method)}`);
+        }
+      })();
       return;
     }
 
