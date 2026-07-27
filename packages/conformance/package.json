@@ -1,0 +1,36 @@
+{
+  "name": "@agent-app/conformance",
+  "version": "0.1.0",
+  "description": "Conformance harness for app-ingress v1. Exercises a live agent and certifies it. Exit 0 = conforming.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seanerama/agent-app-contract.git",
+    "directory": "packages/conformance"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "agent-app-conformance": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-schemas.mjs",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
