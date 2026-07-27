@@ -1,7 +1,6 @@
 {
   "name": "agent-app-contract",
   "version": "0.1.0",
-  "private": true,
   "description": "Frozen, additive-only app-ingress v1 contract — schemas, examples, and the conformance harness that certifies any agent.",
   "type": "module",
   "license": "MIT",
@@ -12,6 +11,36 @@
   "workspaces": [
     "packages/*"
   ],
+  "//": "Consumption (ADR-0004 Amendment 1): the ROOT is the consumed package. `npm i github:seanerama/agent-app-contract#vX.Y.Z` installs this manifest, runs `prepare`, and that builds every workspace. The `@agent-app/*` names are internal-only — npm does not install a git repo's workspaces, which is what broke issue #6.",
+  "files": [
+    "packages/types/dist",
+    "packages/conformance/dist",
+    "packages/mock-agent/dist",
+    "schemas",
+    "examples",
+    "contracts"
+  ],
+  "exports": {
+    "./types": {
+      "types": "./packages/types/dist/index.d.ts",
+      "default": "./packages/types/dist/index.js"
+    },
+    "./conformance": {
+      "types": "./packages/conformance/dist/index.d.ts",
+      "default": "./packages/conformance/dist/index.js"
+    },
+    "./mock-agent": {
+      "types": "./packages/mock-agent/dist/index.d.ts",
+      "default": "./packages/mock-agent/dist/index.js"
+    },
+    "./schemas/*": "./schemas/*",
+    "./examples/*": "./examples/*",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "agent-app-conformance": "./packages/conformance/dist/cli.js",
+    "mock-agent": "./packages/mock-agent/dist/cli.js"
+  },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -21,12 +50,16 @@
     "gen": "npm run gen --workspace @agent-app/types",
     "validate:examples": "node scripts/validate-examples.mjs",
     "loop": "npm run build && node scripts/ci-loop.mjs",
-    "verify:pack": "node scripts/verify-pack.mjs"
+    "verify:consume": "node scripts/verify-consume.mjs",
+    "prepare": "npm run build"
+  },
+  "//dependencies": "The shipped `dist/` imports ajv at runtime. It is declared HERE, not only on the workspaces, because a consumer installs THIS manifest — a workspace's own `dependencies` are never seen by anyone installing the git tag.",
+  "dependencies": {
+    "ajv": "8.20.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
     "@types/node": "22.20.0",
-    "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "typescript": "6.0.3"
   },

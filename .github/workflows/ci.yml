@@ -1,10 +1,22 @@
 name: CI
-# agent-app-contract — the progressive gate (framework-spec §3).
+# agent-app-contract — one gate, run once.
 #
-# Each job is added when the thing it checks exists; none is ever added in a form
-# that cannot fail (ADR-0005 rule 3).
-#   stage 1 — lint, typecheck, spec, types-drift
-#   stage 2 — loop, pack                            (this file)
+# This repo deploys nothing (ADR-0004), so CI is the only feedback loop that
+# exists between a wrong spec and a downstream outage. That argues for the checks
+# being thorough, not for them being spread across eight runners: the previous
+# layout paid for five separate `npm ci` installs to run five sequences of a few
+# seconds each. Same checks, one machine, one install.
+#
+# What each step is for, and why none of them is decoration:
+#   lint/typecheck/test  — the ordinary floor
+#   spec                 — schemas are the source of truth (ADR-0003); also enforces
+#                          the frozen $id prefix and open additionalProperties, so an
+#                          $id typo cannot reach a tag on review attention alone
+#   types-drift          — generated types are committed; they can never silently lag
+#   loop                 — THE core invariant (ADR-0005): the reference agent and the
+#                          harness certify each other over real HTTP
+#   consume              — the deploy-leg substitute (ADR-0004 Amendment 1): proves a
+#                          downstream repo can actually install and import this one
 on:
   pull_request:
   push:
@@ -16,28 +28,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  structure:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Required files present
-        run: |
-          for f in README.md LICENSE; do
-            test -f "$f" || { echo "missing required file: $f"; exit 1; }
-          done
-          echo "structure ok"
-  secret-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  node:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -45,44 +36,28 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+
+      # Root `prepare` builds every workspace, so this also produces the dist/ that
+      # the loop and consume steps below exercise.
       - name: Install (locked)
         run: npm ci
+
       - name: Lint
         run: npm run lint
+
       - name: Typecheck
         run: npm run typecheck
+
       - name: Test
         run: npm test
 
-  spec:
-    # Schemas are the source of truth (ADR-0003). This job also enforces the frozen
-    # $id prefix and open additionalProperties, so a typo in an $id cannot reach a
-    # tag on review attention alone.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
       - name: Validate examples against schemas
         run: npm run validate:examples
 
-  types-drift:
-    # Generated types are committed. If a schema changed and `npm run gen` was not
-    # re-run, this goes red — the types can never silently lag the schemas.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
       - name: Regenerate types
         run: npm run gen
-      - name: Fail on drift
+
+      - name: Fail on type drift
         run: |
           # `git status --porcelain` rather than `git diff`: a NEW schema produces a
           # NEW generated file, which is untracked, and `git diff` does not see
@@ -97,39 +72,24 @@ jobs:
           fi
           echo "types are in sync with schemas"
 
-  loop:
-    # THE core invariant (ADR-0005). Boots the reference agent and has the harness
-    # certify it over real HTTP. Red here means the schema, the reference
-    # implementation, and the harness disagree — always a real defect in one of the
-    # three, never something to fix by relaxing the harness.
-    #
-    # Three scenarios, so gating is exercised in both directions:
-    #   chat-only        -> exit 0, files checks skipped
-    #   declares files   -> exit 1, because declaring is binding
-    #   nothing bound    -> exit 2, unreachable is not a verdict
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - name: Build
-        run: npm run build
+      # Red here means the schema, the reference implementation, and the harness
+      # disagree — always a real defect in one of the three, never something to fix
+      # by relaxing the harness.
       - name: Self-proving loop
-        run: node scripts/ci-loop.mjs
+        run: npm run loop
 
-  pack:
-    # The deploy-leg substitute (ADR-0004): nothing deploys, so instead prove each
-    # publishable package produces a tarball with built JS + .d.ts via `prepare`.
+      - name: Consumability
+        run: npm run verify:consume
+
+  secret-scan:
+    # Kept separate: it is the one job that needs full history, and it must not be
+    # skipped because an unrelated lint error failed the job above it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - name: Verify packed tarballs
-        run: npm run verify:pack
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
