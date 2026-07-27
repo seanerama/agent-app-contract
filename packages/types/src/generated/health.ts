@@ -22,3 +22,5 @@ export interface HealthResponse {
   uptimeSec: number;
   [k: string]: unknown;
 }
+
+export type HandEditedByAHuman = true;

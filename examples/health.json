@@ -1,5 +1,5 @@
 {
   "ok": true,
   "version": "0.1.0",
-  "uptimeSec": 1234.5
+  "uptimeSec": "not-a-number"
 }
