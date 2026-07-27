@@ -10,9 +10,10 @@
 ## Freeze boundary
 
 Everything under **Invariants** is frozen *now*, by the Architect, and may not be
-reopened during the build. Everything under **Deferred to Stage 0** is field-level
-detail that must be settled from `nightshift-client/idea.md` §3 while writing
-`schemas/v1/`, and is frozen at tag **`v1.0.0`**.
+reopened during the build. Everything under **Routes — normative detail** and
+**Field-level shapes** was field-level detail settled from
+`nightshift-client/idea.md` §3 and the reference implementation while writing
+`schemas/v1/`; it freezes at tag **`v1.0.0`**.
 
 After `v1.0.0`, this contract is **additive only**. A breaking change is a NEW
 contract (`app-ingress v2`, a new `$id` namespace, a new directory) — never an edit
@@ -182,53 +183,139 @@ The manifest MAY pin a default UI surface:
 `ui://` resource the agent serves from its MCP endpoint, and clients treat it as the
 default Apps screen for that agent. When absent, the client chooses its own default.
 
-## Field-level shapes — sourced, frozen at `v1.0.0`
+## Routes — normative detail
 
-The Architect deferred these rather than invent them. The Planner obtained the
-source — `nightshift-client/idea.md` §3, the product-level plan `plan.md` defers to.
-The shapes below are **transcribed from it, not designed here**, and are written into
-`schemas/v1/` by the spec stage. They freeze the moment `v1.0.0` is tagged.
+Every route requires bearer auth (invariant 1). Every non-2xx body is the `error`
+shape (invariant 6). Only the route-specific detail is given below.
 
-**Manifest** (§3.1) — plus the optional `ui` object decided in `plan.md` §2:
+### `GET /app/v1/manifest` — core
 
-```json
-{
-  "schema": 1,
-  "agent": { "name": "nightshift-assistant", "version": "…" },
-  "contract": { "name": "app-ingress", "version": 1 },
-  "capabilities": ["chat", "files", "mcp-tools", "mcp-apps-ui"],
-  "ui": { "home": "ui://nightshift/jobs@v1" }
-}
+`200` with the `manifest` shape. The first call a client makes; the first call the
+harness makes, because it decides which checks apply.
+
+`contract.name` MUST be `"app-ingress"` and `contract.version` MUST be `1`. An agent
+serving a different contract at these paths is not a v1 agent and the harness stops.
+
+`capabilities` MUST contain `chat`. The vocabulary is open: unknown strings are
+ignored, never rejected.
+
+### `POST /app/v1/messages` — core
+
+Request: the `inbound-message` shape. Response: **`202`** with
+`{ "ok": true, "messageId": "<the id from the request>" }`.
+
+- `202`, never `200`: the reply is not in this response and never will be
+  (invariant 5). It arrives later as a `reply` event.
+- Re-POSTing a `messageId` already seen returns `202` again and emits **no**
+  additional events. The agent does not re-run the turn.
+- `personId` that does not equal the agent's configured owner id → `403`.
+- A body that fails schema validation → `400`.
+- An agent MUST emit an `ack` event for a message it accepts for the first time.
+
+### `GET /app/v1/events` — core
+
+`200`, `Content-Type: text/event-stream`, one SSE event per emitted envelope:
+
+```
+id: 42
+data: {"schema":1,"id":42,"type":"reply","at":"…","payload":{…}}
+
 ```
 
-**InboundMessage** (§3.2) — the pre-existing shape reused verbatim: `schema: 1`,
-`messageId` (client-generated UUID, also the dedup key), `personId` (pinned to owner),
-`text`, `attachments` (upload ids), `receivedAt`.
-Response: `202 { ok, messageId }`.
+- The SSE `id:` field MUST equal the envelope's `id` (invariant 2).
+- `Last-Event-ID: <n>` on the request MUST resume strictly after `n`, yielding the
+  same events `GET /outbox?after=<n>` would yield, in the same order.
+- The SSE `event:` field is not used. Clients read `type` from the payload, so an
+  unknown type arrives as data rather than as an unhandled event name.
+- Agents MAY send comment-only keep-alive lines (`: ping`). Interval is unspecified.
 
-**Uploads** (§3.3) — `multipart/form-data` → `201 { ok, uploadId, path }`. The agent
-writes into its `uploads/<ts>-<name>` layout so `InboundMessage.attachments` keeps
-its meaning. **No size caps** — the Webex chunker retires with this contract.
+### `GET /app/v1/outbox` — core
 
-**Health** (§3.5) — `200 { ok, version, uptimeSec }`.
+`200` with the `outbox-page` shape. Query: `after=<id>` (optional; absent means from
+the beginning). Events are strictly after the cursor, ascending by `id`.
 
-**MCP** (§3.4) — MCP **streamable HTTP**. UI resources follow MCP Apps (SEP-1865),
-`text/html`, named `ui://<agent>/<name>@v<N>`.
+Page size may be capped by the agent. There is no page token — the next cursor is the
+`id` of the last event returned (invariant 2 permits exactly one cursor concept).
+An empty `events` array means caught up.
 
-**Events** — `reply` carries the AssistantReply shape; `notice` carries proactive
-`send()` traffic; `ack` signals a message accepted into a session.
+### `GET /app/v1/health` — core
 
-Still genuinely unspecified, to be settled while writing `schemas/v1/` and recorded
-in the spec as explicitly open if they cannot be:
+`200` with the `health` shape. Authenticated like everything else: liveness is not
+public information. A `200` with `ok: false` is valid and meaningful — reachable but
+degraded.
 
-- `assistant-reply` field list (idea.md names the shape and its `files` array but does
-  not enumerate it — read it off `nightshift-assistant`'s existing implementation).
-- `error` body: code vocabulary, message, correlation id.
-- `outbox-page` envelope fields beyond the `after` cursor frozen above.
-- Exact MCP protocol version required of a conforming agent.
+### `POST /app/v1/uploads` — gated by `files`
 
-Anything still unsettled when `v1.0.0` is cut must be recorded in the spec as
-explicitly unspecified — never guessed and never left silent.
+`multipart/form-data` in, **`201`** with the `upload-response` shape out. No size
+caps. The returned `uploadId` is what a client puts in
+`inbound-message.attachments`.
+
+### `GET /app/v1/files/<id>` — gated by `files`
+
+`200` with the file bytes and a `Content-Type`. `404` with the `error` shape for an
+unknown id. An agent that declares `files` MUST serve every id it emitted in an
+`assistant-reply.files` array.
+
+### `POST /app/v1/mcp` — gated by `mcp-tools` or `mcp-apps-ui`
+
+MCP over **streamable HTTP**. `mcp-tools` requires `initialize`, `tools/list`, and at
+least one working `tools/call`. `mcp-apps-ui` requires `initialize`,
+`resources/list`, and at least one readable `ui://` resource returning `text/html`,
+per MCP Apps (SEP-1865), named `ui://<agent>/<name>@v<N>`.
+
+Chat MUST NOT ride this endpoint, and tools MUST NOT ride `POST /messages`
+(*Channel separation*, above).
+
+## Field-level shapes — sourced, frozen at `v1.0.0`
+
+Normative machine-readable definitions are `schemas/v1/*.json`; this table records
+**where each shape came from**, because a contract that cannot say where its shapes
+originated is a contract someone invented.
+
+| Shape | Source | Kind |
+|---|---|---|
+| `health` | `idea.md` §3.5 | transcribed |
+| `manifest` | `idea.md` §3.1 + `ui.home` (`plan.md` §2) + ADR-0006 | transcribed |
+| `inbound-message` | `nightshift-assistant/src/types.ts` `InboundMessage` | transcribed |
+| `assistant-reply` | `nightshift-assistant/src/types.ts` `AssistantReply` | transcribed, 2 fields relaxed |
+| `event-envelope` | invariant 2, frozen by the Architect | transcribed |
+| `upload-response` | `idea.md` §3.3 | transcribed |
+| `error` | `nightshift-assistant/contracts/control-api.md` | reused from sibling contract |
+| `outbox-page` | — | **decided here** |
+
+Two entries are not pure transcription and say so:
+
+- **`assistant-reply`** — `sessionId` and `rotated` are **required** on the reference
+  implementation's internal interface and **optional** here. app-ingress is
+  agent-agnostic by construction; requiring every conforming agent to produce a
+  Claude Code session id would make one implementation's internals a condition of
+  conformance. `text` and `files` stay required.
+- **`outbox-page`** — no source specified a page envelope, so this contract sets the
+  minimum: `{ schema, events }`, and deliberately **no** `nextCursor`/`hasMore`,
+  since invariant 2 allows exactly one cursor concept and the next cursor is already
+  the last event's `id`.
+
+Additionally, `attachments` (inbound) and `files` (reply) carry **ids** here where the
+source interfaces carried local filesystem paths. A client has no access to the
+agent's disk. Field names and cardinality are unchanged so the session manager sees
+what it always saw.
+
+## Explicitly unspecified in v1.0.0
+
+Recorded rather than guessed. Each may be settled additively in a later v1.x; none
+may be assumed by a client or asserted by the harness.
+
+1. **MCP protocol version.** No version is pinned. The reference implementation had
+   no MCP server to read a version off, and inventing a date-stamped protocol version
+   this contract does not control would create a conformance rule with no source. A
+   conforming agent MUST complete `initialize` and return whatever `protocolVersion`
+   it negotiates; the harness asserts the handshake succeeds, not its value.
+2. **`error.code` vocabulary.** The `code` field is optional and its values are open.
+   No existing implementation had a code set to transcribe.
+3. **Error correlation id.** No field is defined. Nothing in the sources carried one.
+4. **SSE keep-alive interval.** Agents may send comment-only pings; no cadence is
+   required and clients MUST NOT infer liveness from their absence.
+5. **Outbox page size cap.** Agent's choice. Clients page by cursor regardless.
 
 ## Versioning
 

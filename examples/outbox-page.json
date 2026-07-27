@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "events": [
+    {
+      "schema": 1,
+      "id": 41,
+      "type": "ack",
+      "at": "2026-07-27T19:58:21.995Z",
+      "payload": {
+        "messageId": "9f2c1e64-8b3a-4d21-9f7e-2c5a1b0d6e83"
+      }
+    },
+    {
+      "schema": 1,
+      "id": 42,
+      "type": "reply",
+      "at": "2026-07-27T19:58:23.512Z",
+      "payload": {
+        "schema": 1,
+        "text": "Two jobs are running: **seed-audit** and **note-ingest**.",
+        "files": []
+      }
+    }
+  ]
+}
