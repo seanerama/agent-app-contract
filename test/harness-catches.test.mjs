@@ -46,6 +46,8 @@ const readBody = async (req) => {
  * `flaws` is a plain object so each test reads as "conforming EXCEPT this one thing".
  */
 const startFakeAgent = async (flaws = {}) => {
+  const capabilities = flaws.capabilities ?? ['chat'];
+  const files = new Map();
   const events = [];
   let nextId = 1;
   const seen = new Set();
@@ -78,8 +80,93 @@ const startFakeAgent = async (flaws = {}) => {
         schema: 1,
         agent: { name: 'fake', version: '0.0.0' },
         contract: { name: 'app-ingress', version: 1 },
-        capabilities: ['chat'],
+        capabilities,
       });
+      return;
+    }
+
+    // Gating (ADR-0006): a route whose capability is undeclared MUST 404, or the
+    // manifest is lying. The fake has to get this right for the flaw under test to be
+    // the only thing failing.
+    const gated = [
+      { prefix: '/app/v1/uploads', needs: ['files'] },
+      { prefix: '/app/v1/files', needs: ['files'] },
+      { prefix: '/app/v1/mcp', needs: ['mcp-tools', 'mcp-apps-ui'] },
+    ].find((g) => path === g.prefix || path.startsWith(`${g.prefix}/`));
+    if (gated && !gated.needs.some((c) => capabilities.includes(c))) {
+      json(res, 404, { ok: false, error: `${gated.prefix} is not served by this agent` });
+      return;
+    }
+
+    if (path === '/app/v1/uploads' && req.method === 'POST') {
+      void (async () => {
+        const body = await readBody(req);
+        const content = body.split('\r\n\r\n')[1]?.split('\r\n--')[0] ?? '';
+        const uploadId = `up_${files.size + 1}`;
+        files.set(uploadId, content);
+        if (flaws.uploadWrongStatus) {
+          // 200 instead of the contracted 201. The contract sets 201 explicitly.
+          json(res, 200, { ok: true, uploadId, path: `uploads/${uploadId}` });
+        } else {
+          json(res, 201, { ok: true, uploadId, path: `uploads/${uploadId}` });
+        }
+      })();
+      return;
+    }
+
+    if (path.startsWith('/app/v1/files/')) {
+      const id = decodeURIComponent(path.slice('/app/v1/files/'.length));
+      const stored = files.get(id);
+      if (stored === undefined) {
+        json(res, 404, { ok: false, error: 'no such file' });
+        return;
+      }
+      // Invariant: what came out must be what went in.
+      const payload = flaws.corruptsDownload ? `${stored}-corrupted` : stored;
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(payload);
+      return;
+    }
+
+    if (path === '/app/v1/mcp' && req.method === 'POST') {
+      void (async () => {
+        const rpc = JSON.parse(await readBody(req));
+        const ok = (result) => json(res, 200, { jsonrpc: '2.0', id: rpc.id, result });
+        if (rpc.method === 'initialize') {
+          if (flaws.mcpNoProtocolVersion) ok({ capabilities: {}, serverInfo: { name: 'fake' } });
+          else
+            ok({ protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fake' } });
+          return;
+        }
+        if (rpc.method === 'tools/list') {
+          ok({ tools: flaws.mcpListsNoTools ? [] : [{ name: 'status', inputSchema: {} }] });
+          return;
+        }
+        if (rpc.method === 'tools/call') {
+          if (flaws.mcpToolNotCallable) {
+            json(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: 'no' } });
+          } else {
+            ok({ content: [{ type: 'text', text: '{}' }] });
+          }
+          return;
+        }
+        if (rpc.method === 'resources/list') {
+          ok({ resources: [{ uri: 'ui://fake/home@v1', mimeType: 'text/html' }] });
+          return;
+        }
+        if (rpc.method === 'resources/read') {
+          // MCP Apps resources are text/html by definition.
+          ok({
+            contents: [
+              flaws.uiNotHtml
+                ? { uri: 'ui://fake/home@v1', mimeType: 'application/json', text: '{}' }
+                : { uri: 'ui://fake/home@v1', mimeType: 'text/html', text: '<p>hi</p>' },
+            ],
+          });
+          return;
+        }
+        json(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: 'no' } });
+      })();
       return;
     }
 
@@ -116,7 +203,8 @@ const startFakeAgent = async (flaws = {}) => {
         if (!seen.has(body.messageId) || flaws.noDedup) {
           seen.add(body.messageId);
           emit('ack', { messageId: body.messageId });
-          emit('reply', { schema: 1, text: 'ok', files: [] });
+          const echoed = flaws.dropsAttachments ? [] : (body.attachments ?? []);
+          emit('reply', { schema: 1, text: 'ok', files: echoed });
         }
         json(res, 202, { ok: true, messageId: body.messageId });
       })();
@@ -217,5 +305,79 @@ describe('the harness catches a non-conforming agent', () => {
   it('catches an agent that accepts a body violating inbound-message', async () => {
     const report = await runAgainst({ acceptsMalformed: true });
     assert.equal(checkNamed(report, 'messages.invalid.400').result, 'fail');
+  });
+});
+
+describe('the harness catches a broken files capability (ADR-0006)', () => {
+  const withFiles = (flaws) => runAgainst({ ...flaws, capabilities: ['chat', 'files'] });
+
+  it('passes a correct files implementation', async () => {
+    const report = await withFiles({});
+    assert.equal(
+      report.result,
+      'pass',
+      JSON.stringify(
+        report.checks.filter((c) => c.result === 'fail'),
+        null,
+        2,
+      ),
+    );
+    assert.equal(checkNamed(report, 'files.roundtrip').result, 'pass');
+  });
+
+  it('catches uploads answering 200 instead of the contracted 201', async () => {
+    const report = await withFiles({ uploadWrongStatus: true });
+    assert.equal(checkNamed(report, 'files.upload.201').result, 'fail');
+  });
+
+  it('catches a reply that drops the attachment it was sent', async () => {
+    const report = await withFiles({ dropsAttachments: true });
+    assert.equal(checkNamed(report, 'files.roundtrip').result, 'fail');
+  });
+
+  it('catches a download whose bytes differ from what was uploaded', async () => {
+    const report = await withFiles({ corruptsDownload: true });
+    assert.equal(checkNamed(report, 'files.roundtrip').result, 'fail');
+  });
+
+  it('never reports a DECLARED capability as skip — that would hide a failure', async () => {
+    const report = await withFiles({ uploadWrongStatus: true });
+    const skippedFiles = report.checks.filter(
+      (c) => c.id.startsWith('files.') && c.result === 'skip',
+    );
+    assert.deepEqual(skippedFiles, [], 'declaring a capability is binding (ADR-0006)');
+  });
+});
+
+describe('the harness catches a broken MCP capability', () => {
+  const withMcp = (flaws) =>
+    runAgainst({ ...flaws, capabilities: ['chat', 'mcp-tools', 'mcp-apps-ui'] });
+
+  it('passes a correct MCP implementation', async () => {
+    const report = await withMcp({});
+    assert.equal(checkNamed(report, 'mcp.initialize').result, 'pass');
+    assert.equal(checkNamed(report, 'mcp.tools').result, 'pass');
+    assert.equal(checkNamed(report, 'mcp.ui').result, 'pass');
+  });
+
+  it('catches an initialize that names no protocol version', async () => {
+    // The contract pins no VERSION, but it does require the handshake to name one.
+    const report = await withMcp({ mcpNoProtocolVersion: true });
+    assert.equal(checkNamed(report, 'mcp.initialize').result, 'fail');
+  });
+
+  it('catches declaring mcp-tools while listing no tools', async () => {
+    const report = await withMcp({ mcpListsNoTools: true });
+    assert.equal(checkNamed(report, 'mcp.tools').result, 'fail');
+  });
+
+  it('catches a listed tool that cannot actually be called', async () => {
+    const report = await withMcp({ mcpToolNotCallable: true });
+    assert.equal(checkNamed(report, 'mcp.tools').result, 'fail');
+  });
+
+  it('catches a ui:// resource that is not text/html', async () => {
+    const report = await withMcp({ uiNotHtml: true });
+    assert.equal(checkNamed(report, 'mcp.ui').result, 'fail');
   });
 });
