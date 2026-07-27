@@ -17,7 +17,7 @@ import { buildReport, EXIT, exitCodeFor } from '../packages/conformance/dist/ind
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CLI = join(ROOT, 'packages', 'conformance', 'dist', 'cli.js');
 
-const versions = { contractVersion: '1', harnessVersion: '0.1.0' };
+const versions = { contractVersion: '1', harnessVersion: '1.0.0' };
 const check = (id, result) => ({ id, title: id, result, detail: null });
 
 const freePort = async () => {

@@ -1,7 +1,7 @@
 {
   "name": "@agent-app/types",
-  "version": "0.1.0",
-  "description": "TypeScript types generated from the app-ingress v1 JSON Schemas. Generated output is committed and drift-checked in CI — never hand-edit src/generated.",
+  "version": "1.0.0",
+  "description": "TypeScript types generated from the app-ingress v1 JSON Schemas. Generated output is committed and drift-checked in CI \u2014 never hand-edit src/generated.",
   "type": "module",
   "license": "MIT",
   "repository": {

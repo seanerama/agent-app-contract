@@ -1,6 +1,6 @@
 {
   "name": "@agent-app/mock-agent",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Reference in-memory implementation of the app-ingress v1 surface. Run it locally for app development; CI runs the conformance harness against it.",
   "type": "module",
   "license": "MIT",

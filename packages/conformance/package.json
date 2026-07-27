@@ -1,6 +1,6 @@
 {
   "name": "@agent-app/conformance",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Conformance harness for app-ingress v1. Exercises a live agent and certifies it. Exit 0 = conforming.",
   "type": "module",
   "license": "MIT",
